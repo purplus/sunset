@@ -519,10 +519,44 @@ function lowCloudBlockPenalty(lowC){
   if(lowC>=45) return -4;
   return 0;
 }
-function computeIndex(cloud, hum, vis, wind, aod, lowC){
-  let base = scoreCloud(cloud)*0.40 + scoreHum(hum)*0.10 + scoreVis(vis)*0.10
-           + scoreWind(wind)*0.10 + scoreAOD(aod)*0.30;
-  return Math.round(base + lowCloudBlockPenalty(lowC));
+function scoreCloudLow(lowC){
+  // 低云：遮挡光线，越少越好
+  if(lowC==null) return 50;
+  if(lowC < 10) return 100;   // 几乎无低云，光线通畅
+  if(lowC < 30) return 80;    // 少量低云
+  if(lowC < 50) return 50;    // 中等低云
+  if(lowC < 70) return 20;    // 较多低云，遮挡
+  return 0;                    // 低云厚重，完全遮挡
+}
+function scoreCloudMid(midC){
+  // 中云：火烧云最佳云层（高积云、高层云）
+  if(midC==null) return 50;
+  if(midC < 10) return 30;    // 几乎无中云，缺主体
+  if(midC < 30) return 60;    // 少量中云
+  if(midC < 50) return 100;   // 中等中云，最佳
+  if(midC < 70) return 80;    // 较多中云
+  if(midC < 90) return 50;    // 很多中云
+  return 20;                    // 阴雨天
+}
+function scoreCloudHigh(highC){
+  // 高云：卷云类最易被染成金红色
+  if(highC==null) return 50;
+  if(highC < 10) return 20;    // 无高云
+  if(highC < 30) return 50;    // 少量高云
+  if(highC < 60) return 90;    // 中等高云，卷云易染红
+  if(highC < 80) return 100;   // 较多高云
+  return 70;                    // 很多高云
+}
+function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC){
+  // 照搬 sunsetbot 算法：中云主体 + 高云染红 + 低云遮挡 + AOD适中
+  const sLow = scoreCloudLow(lowC);
+  const sMid = scoreCloudMid(midC);
+  const sHigh = scoreCloudHigh(highC);
+  // 权重：中云40% + 高云30% + 低云遮挡20% + AOD10%
+  let base = sMid*0.40 + sHigh*0.30 + sLow*0.20 + scoreAOD(aod)*0.10;
+  // 低云遮挡惩罚：低云>55% 扣 15 分
+  let penalty = (lowC!=null && lowC>55) ? -15 : 0;
+  return Math.round(base + penalty);
 }
 function level(index){
   if(index<35) return {t:"一般，不建议特意蹲守", c:"var(--bad)"};
@@ -860,12 +894,14 @@ function buildDays(weather){
     // 朝霞数据（日出时刻）
     const srCloud = pickSR(hourly.cloud_cover);
     const srLow = pickSR(hourly.cloud_cover_low);
+    const srMid = pickSR(hourly.cloud_cover_mid);
+    const srHigh = pickSR(hourly.cloud_cover_high);
     const srAOD = (hourly.aerosol_optical_depth && idxSR>=0) ? hourly.aerosol_optical_depth[idxSR] : null;
     const srWind = pickSR(hourly.wind_speed_10m);
     const srHum = pickSR(hourly.relative_humidity_2m);
     const srVis = (idxSR>=0 && hourly.visibility && hourly.visibility[idxSR]!==null) ? hourly.visibility[idxSR]/1000 : 20;
-    const index = computeIndex(cloud, hum, vis, wind, aod, lowC);
-    const indexSR = idxSR>=0 ? computeIndex(srCloud, srHum, srVis, srWind, srAOD, srLow) : null;
+    const index = computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC);
+    const indexSR = idxSR>=0 ? computeIndex(srCloud, srHum, srVis, srWind, srAOD, srLow, srMid, srHigh) : null;
     // 海拔修正：高海拔视野开阔加分（>1000m +3，>2000m +5）
     const elev = state.city.elev;
     const elevBonus = elev!=null ? (elev>=2000?5:elev>=1000?3:0) : 0;
