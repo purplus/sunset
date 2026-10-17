@@ -1114,9 +1114,31 @@ function renderSky(d, isToday){
   els.sunMarker.style.opacity = after?0:clamp(sunGlow,0.15,1);
   els.sunMarker.style.boxShadow = "0 0 "+(20+30*warm)+"px rgba(255,160,70,"+(0.3+0.3*warm)+")";
 
-  els.skyHud.innerHTML = isToday
-    ? "当前天色 · 距日落 <b>"+countdown(sunsetMin)+"</b>"
-    : fmtDate(d.date)+" 傍晚天色预估";
+  // 实时天色状态
+  let skyStatus = "";
+  if(!isToday){
+    skyStatus = fmtDate(d.date)+" 傍晚天色预估";
+  } else if(nowMin < sunriseMin - 60){
+    skyStatus = "深夜 · 距日出 "+countdown(sunriseMin)+"h";
+  } else if(nowMin < sunriseMin){
+    skyStatus = "黎明前 · 距日出 "+countdown(sunriseMin)+"h";
+  } else if(nowMin < sunriseMin + 30){
+    skyStatus = "黄金时刻 · 日出中";
+  } else if(nowMin < sunsetMin - 120){
+    skyStatus = "白天 · 距日落 "+countdown(sunsetMin)+"h";
+  } else if(nowMin < sunsetMin - 30){
+    skyStatus = "黄金时刻 · 距日落 "+countdown(sunsetMin)+"h";
+  } else if(nowMin < sunsetMin + 30){
+    skyStatus = "晚霞时刻 · 日落 "+d.sunsetHM;
+  } else if(nowMin < sunsetMin + 90){
+    skyStatus = "蓝调时刻 · 刚日落";
+  } else {
+    skyStatus = "夜晚 · 已过日落";
+  }
+  // 加实时数据
+  const nowCloud = d.cloud!=null ? Math.round(d.cloud)+"%云" : "";
+  const nowTemp = d.temp!=null ? Math.round(d.temp)+"°C" : "";
+  els.skyHud.innerHTML = skyStatus + (nowCloud || nowTemp ? " · "+[nowCloud, nowTemp].filter(Boolean).join(" · ") : "");
 }
 
 function buildSkyGradient(index){
