@@ -1359,7 +1359,7 @@ function initLoc(){
     navigator.geolocation.getCurrentPosition(
       pos=>{ doReverse(pos.coords.latitude, pos.coords.longitude).catch(ipFallback); },
       err=>{ console.log("geo err:", err.message); ipFallback(); },
-      {timeout:20000, maximumAge:0, enableHighAccuracy:true}
+      {timeout:30000, maximumAge:0, enableHighAccuracy:true}
     );
   });
 }
