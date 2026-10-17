@@ -1320,19 +1320,34 @@ function initLoc(){
     const doReverse = async (lat, lon) => {
       try {
         let placeName = "我的位置";
-        // 逆地理编码：BigDataCloud（免费，国内可用）
+        // 逆地理编码：OpenStreetMap Nominatim（能到街道级）
         try {
-          const rg = await fetch("https://api.bigdatacloud.net/data/reverse-geocode-client?latitude="+lat+"&longitude="+lon+"&localityLanguage=zh");
+          const rg = await fetch("https://nominatim.openstreetmap.org/reverse?lat="+lat+"&lon="+lon+"&format=json&accept-language=zh&zoom=18", {
+            headers: {"User-Agent": "SunsetPredictor/1.0"}
+          });
           if(rg.ok){
             const rgData = await rg.json();
-            const city = rgData.city || rgData.locality || "";
-            const district = rgData.principalSubdivision || "";
-            const locality = rgData.locality || "";
-            if(locality && city && locality!==city) placeName = locality + " · " + city;
+            const a = rgData.address || {};
+            const road = a.road || a.pedestrian || a.footway || a.residential || "";
+            const suburb = a.suburb || a.district || a.borough || "";
+            const city = a.city || a.town || a.county || "";
+            if(road && suburb) placeName = road + " · " + suburb;
+            else if(road && city) placeName = road + " · " + city;
+            else if(road) placeName = road;
+            else if(suburb && city) placeName = suburb + " · " + city;
             else if(city) placeName = city;
-            else if(district) placeName = district;
+            else if(rgData.display_name) placeName = rgData.display_name.split(",").slice(0,2).join(" ");
           }
-        } catch(e){}
+        } catch(e){
+          // Nominatim 失败，降级用 BigDataCloud
+          try {
+            const rg2 = await fetch("https://api.bigdatacloud.net/data/reverse-geocode-client?latitude="+lat+"&longitude="+lon+"&localityLanguage=zh");
+            if(rg2.ok){
+              const d2 = await rg2.json();
+              placeName = d2.locality || d2.city || d2.principalSubdivision || "我的位置";
+            }
+          } catch(e2){}
+        }
         // 获取海拔
         let elev = null;
         try {
