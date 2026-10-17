@@ -575,11 +575,13 @@ async function fetchWeather(lat, lon, model, source){
   return fetchOpenMeteo(lat, lon, model);
 }
 async function fetchOpenMeteo(lat, lon, model){
+  const offset = state.dateOffset || 0;
+  const days = 3 + offset;
   let url = "https://api.open-meteo.com/v1/forecast"
     + "?latitude="+lat+"&longitude="+lon
     + "&hourly=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,cloud_base,relative_humidity_2m,wind_speed_10m,visibility,temperature_2m,dew_point_2m"
     + "&daily=sunrise,sunset"
-    + "&forecast_days=3&timezone=auto";
+    + "&forecast_days="+days+"&timezone=auto";
   if(model==="gfs") url += "&models=gfs_global";
   else if(model==="ec") url += "&models=ecmwf_ifs025";
   const [res, aodRes] = await Promise.all([
@@ -829,8 +831,9 @@ function buildDays(weather){
   const hourly = weather.hourly;
   const daily = weather.daily;
   const days = [];
+  const offset = state.dateOffset || 0;
   const now = new Date();
-  for(let d=0; d<daily.time.length; d++){
+  for(let d=offset; d<Math.min(offset+3, daily.time.length); d++){
     const date = new Date(daily.time[d]+"T00:00:00Z");
     const dateStr = daily.time[d];
     const sunsetHM = hmFromISO(daily.sunset[d]);
@@ -1241,6 +1244,11 @@ async function loadCity(city){
   els.pmSliders.style.display = "none";
   els.pmToggle.textContent = "展开";
   els.loading.style.display = "flex";
+  // 计算选择日期与今天的偏移天数
+  const selDate = els.dateInput.value;
+  const today = new Date();
+  const todayStr = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,'0')+"-"+String(today.getDate()).padStart(2,'0');
+  state.dateOffset = selDate && selDate !== todayStr ? Math.round((new Date(selDate) - new Date(todayStr)) / 86400000) : 0;
   const src = state.source;
   try{
     const w = await fetchWeather(city.lat, city.lon, state.model, src);
