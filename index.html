@@ -345,6 +345,11 @@
   </div>
 
   <div class="section">
+    <div class="section-h"><h2>详细预测</h2><span class="tag">参考 sunsetbot 格式</span></div>
+    <div class="grid-factors" id="detailForecast"></div>
+  </div>
+
+  <div class="section">
     <div class="section-h"><h2>关键因子</h2><span class="tag">取日落前后一小时的预报值参与评分</span></div>
     <div class="grid-factors" id="factors"></div>
 
@@ -591,7 +596,7 @@ const els = {
   tSunriseIdx:$("tSunriseIdx"), tSunriseTime:$("tSunriseTime"),
   tSunrise:$("tSunrise"), tGoldenSR:$("tGoldenSR"), tBlueSR:$("tBlueSR"),
   skyGrad:$("skyGrad"), sunMarker:$("sunMarker"), skyHud:$("skyHud"),
-  factors:$("factors"), week:$("week"),
+  factors:$("factors"), detailForecast:$("detailForecast"), week:$("week"),
   pmToggle:$("pmToggle"), pmSliders:$("pmSliders"),
   slCloud:$("slCloud"), slHum:$("slHum"), slVis:$("slVis"),
   outCloud:$("outCloud"), outHum:$("outHum"), outVis:$("outVis"),
@@ -1158,6 +1163,30 @@ function renderFactors(d){
       <div class="bar"><i style="width:${it.s}%"></i></div>
       <div class="fnote">${it.note}</div>
     </div>`).join("");
+
+  // 详细预测（sunsetbot 风格）
+  const d0 = state.days[state.selDay];
+  if(d0 && els.detailForecast){
+    // 鲜艳度：中云+高云综合，低云扣分
+    const vivid = Math.round((scoreCloudMid(d0.midC||40)*0.5 + scoreCloudHigh(d0.highC||40)*0.5) * (1 - (d0.lowC||0)/200));
+    // 气溶胶：AOD 适中最好
+    const aodVal = d0.aod!=null ? d0.aod : 0.2;
+    const aodScore = aodVal < 0.1 ? 80 : aodVal < 0.3 ? 100 : aodVal < 0.5 ? 60 : 30;
+    // 不确定性：简化版（基于数据完整度）
+    const uncertainty = d0.lowC==null||d0.midC==null||d0.highC==null ? 30 : 15;
+    const detailItems = [
+      {k:"鲜艳度", v:vivid+" / 100", u:"", note:vivid>70?"色彩饱和度高，易出大片":vivid>50?"色彩一般":"色彩偏淡", s:vivid},
+      {k:"气溶胶", v:aodVal.toFixed(2), u:"", note:aodScore>80?"AOD适中，通透度好":aodScore>50?"AOD偏高，可能发灰":"AOD过高，天空污浊", s:aodScore},
+      {k:"不确定性", v:uncertainty+"%", u:"", note:uncertainty<20?"预报可信度高":"数据不完整，参考性有限", s:100-uncertainty}
+    ];
+    els.detailForecast.innerHTML = detailItems.map(it=>`
+      <div class="factor">
+        <div class="fk">${it.k}</div>
+        <div class="fv">${it.v}</div>
+        <div class="bar"><i style="width:${it.s}%"></i></div>
+        <div class="fnote">${it.note}</div>
+      </div>`).join("");
+  }
 }
 function iconFor(k){
   const paths = {
