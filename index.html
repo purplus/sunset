@@ -382,6 +382,20 @@
   </div>
 
   <div class="section">
+    <div class="section-h"><h2>卫星实况云图</h2><span class="tag" id="satNote">葵花9 · 实时云况</span></div>
+    <div style="position:relative;background:#0a0e1e;border-radius:12px;overflow:hidden">
+      <canvas id="satCanvas" style="display:block;width:100%;height:auto"></canvas>
+      <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px" id="satCanvasTag">正在获取卫星云图…</div>
+      <div style="position:absolute;top:8px;right:10px;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end" id="satTimeBar"></div>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:11px;color:#8f9dc0" id="satControls">
+      <button class="chip" data-sattype="dawn" style="background:var(--panel);border:1px solid rgba(100,200,255,.3);color:#cfe3ff;padding:5px 12px;border-radius:999px;cursor:pointer">朝霞</button>
+      <button class="chip" data-sattype="dusk" style="background:var(--panel);border:1px solid rgba(255,140,120,.3);color:#ffd9d0;padding:5px 12px;border-radius:999px;cursor:pointer">晚霞</button>
+      <span style="align-self:center">实况可切时间看近几小时云动 · 虚线=各地日出/日落等时线</span>
+    </div>
+  </div>
+
+  <div class="section">
     <div class="section-h"><h2>全国火烧云程度</h2><span class="tag" id="regionalNote">省会城市 · 直辖市 · 实时云况</span></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%">
       <div style="position:relative;background:#151c36;border-radius:12px;overflow:hidden">
@@ -393,13 +407,20 @@
         <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px" id="predCanvasTag">正在生成程度图…</div>
       </div>
     </div>
-    <div class="legend-bar">
-      <span style="background:#f0e8f0">不烧 &lt;10</span>
-      <span style="background:#e8d0e0">微烧 10-25</span>
-      <span style="background:#d8a0c0">小烧 25-45</span>
-      <span style="background:#c06090">中烧 45-70</span>
-      <span style="background:#9a3060">大烧 70-88</span>
-      <span style="background:#6b2040">爆烧 ≥88</span>
+    <div style="margin-top:8px;background:rgba(21,28,54,0.9);border-radius:10px;padding:10px 14px">
+      <div style="font-size:11px;color:#9aa7c7;margin-bottom:4px">鲜艳度（质量）%</div>
+      <div style="height:10px;border-radius:5px;background:linear-gradient(90deg,#f0e8f0,#e8d0e0,#d8a0c0,#c06090,#9a3060,#6b2040)"></div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:#c7d2ea;margin-top:3px">
+        <span>0</span><span>10</span><span>25</span><span>40</span><span>55</span><span>70</span><span>80</span><span>88</span><span>94</span>
+      </div>
+      <div style="font-size:11px;color:#8f9dc0;margin-top:5px;display:flex;flex-wrap:wrap;gap:4px 10px">
+        <span><b style="color:#9aa7c7">&lt;10</b> 木烧</span>
+        <span><b style="color:#9aa7c7">10-25</b> 微烧</span>
+        <span><b style="color:#9aa7c7">25-45</b> 小烧</span>
+        <span><b style="color:#9aa7c7">45-70</b> 中烧</span>
+        <span><b style="color:#9aa7c7">70-88</b> 大烧</span>
+        <span><b style="color:#9aa7c7">≥88</b> 爆烧</span>
+      </div>
     </div>
   </div>
 
@@ -1961,22 +1982,257 @@ function updateLeafletMap(){
   }
 }
 
+/* ================= 卫星实况云图（GIBS 葵花9 Himawari AirMass） ================= */
+// 数据源：NASA GIBS WMTS 瓦片（CORS 开放，浏览器可直接跨域绘制）
+// 瓦片模板：https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Air_Mass/default/{Time}/GoogleMapsCompatible_Level6/{z}/{row}/{col}.png
+// 实测：中国区域 z5（x22..28, y10..14，共 35 瓦片，256px/瓦）全部可下载；数据延迟约 2 小时
+const SAT_LEVEL = 5;                                  // z5：32x32 全球瓦片
+const SAT_COL0 = 22, SAT_COL1 = 28;                   // 中国经度 73~135
+const SAT_ROW0 = 10, SAT_ROW1 = 14;                   // 中国纬度 54~18
+const SAT_BOUNDS = {la0:18, la1:54, lo0:73, lo1:135}; // 中国主体范围（绘图裁剪）
+const SAT_TIME_STEP_MS = 30 * 60 * 1000;               // 时间轴步长 30 分钟
+let satType = "dusk";                                  // dawn=朝霞(日出等时线) dusk=晚霞(日落等时线)
+let satFrame = null;                                   // 当前帧时间字符串
+let satLoading = false;
+
+// Web Mercator：经纬度 → 该级别瓦片坐标（浮点）
+function webMercTile(lat, lon, z){
+  const x = (lon + 180) / 360 * Math.pow(2, z);
+  const y = (1 - Math.log(Math.tan(lat*Math.PI/180) + 1/Math.cos(lat*Math.PI/180)) / Math.PI) / 2 * Math.pow(2, z);
+  return {x, y};
+}
+
+// 找最近可用帧：从 now-2h 起向前每 10 分钟探测（GIBS 数据延迟约 2 小时）
+async function probeLatestSatFrame(){
+  const now = Date.now();
+  for(let i=0; i<24; i++){
+    const t = new Date(now - 2*3600*1000 - i*10*60*1000);
+    const iso = t.toISOString().replace(/\.\d+Z$/,"Z");
+    const url = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Air_Mass/default/"+iso+"/GoogleMapsCompatible_Level6/5/12/26.png";
+    try{
+      const r = await fetch(url, {mode:"cors"});
+      if(r.ok) return iso;
+    }catch(e){}
+  }
+  return null;
+}
+
+// 绘制卫星实况云图
+async function renderSatMap(){
+  const cv = document.getElementById("satCanvas");
+  const tag = document.getElementById("satCanvasTag");
+  const bar = document.getElementById("satTimeBar");
+  if(!cv || !tag) return;
+  if(satLoading) return;
+  satLoading = true;
+  tag.textContent = "正在获取卫星云图…";
+  try{
+    // 探测最近可用帧（首次）
+    if(!satFrame){
+      const f = await probeLatestSatFrame();
+      if(!f){ tag.textContent = "卫星云图暂不可用，请稍后重试"; satLoading=false; return; }
+      satFrame = f;
+      // 生成时间轴：当前帧 + 前 4 帧（近 2.5 小时）
+      if(bar){
+        bar.innerHTML = "";
+        for(let k=0; k<5; k++){
+          const t = new Date(Date.parse(f) - k*SAT_TIME_STEP_MS);
+          const btn = document.createElement("button");
+          btn.textContent = k===0 ? "最新 " : t.toISOString().slice(11,16)+"Z";
+          btn.dataset.time = t.toISOString().replace(/\.\d+Z$/,"Z");
+          btn.style.cssText = "font-size:11px;padding:3px 9px;border-radius:999px;cursor:pointer;border:1px solid rgba(100,200,255,.3);background:rgba(10,14,30,.7);color:#cfe3ff";
+          if(k===0) btn.style.background = "rgba(64,196,255,.25)";
+          btn.onclick = ()=>{ satFrame = btn.dataset.time; renderSatMap(); };
+          bar.appendChild(btn);
+        }
+      }
+    }
+    // 并行加载 35 瓦片
+    const tiles = [];
+    const rows = [];
+    for(let row=SAT_ROW0; row<=SAT_ROW1; row++){
+      const line = [];
+      for(let col=SAT_COL0; col<=SAT_COL1; col++){
+        const url = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Air_Mass/default/"+satFrame+"/GoogleMapsCompatible_Level6/"+SAT_LEVEL+"/"+row+"/"+col+".png";
+        line.push(url);
+      }
+      rows.push(line);
+    }
+    const flat = rows.flat();
+    const imgs = await Promise.all(flat.map(url=>new Promise(res=>{
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = ()=>res(img);
+      img.onerror = ()=>res(null);
+      img.src = url;
+    })));
+    const good = imgs.filter(Boolean).length;
+    if(good < flat.length * 0.7){
+      tag.textContent = "云图部分加载失败（"+good+"/"+flat.length+"），请刷新重试";
+    }
+    // 拼瓦片
+    const T = 256;
+    const CW = (SAT_COL1-SAT_COL0+1)*T, CH = (SAT_ROW1-SAT_ROW0+1)*T;
+    const dpr = window.devicePixelRatio||1;
+    cv.width = CW*dpr; cv.height = CH*dpr;
+    cv.style.aspectRatio = CW+"/"+CH;
+    const ctx = cv.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = "#0a0e1e";
+    ctx.fillRect(0, 0, CW, CH);
+    for(let r=0; r<rows.length; r++){
+      for(let c=0; c<rows[r].length; c++){
+        const img = imgs[r*rows[r].length + c];
+        if(img) ctx.drawImage(img, c*T, r*T, T, T);
+      }
+    }
+    // 叠加投影辅助：瓦片坐标 → canvas 像素
+    // 瓦片范围 col22..28 → canvas 像素 0..1792；row10..14 → 0..1280
+    // Web Mercator：canvas 世界坐标 = (tileX - SAT_COL0) * T
+    const px = lon => (webMercTile(0, lon, SAT_LEVEL).x - SAT_COL0) * T;
+    const py = lat => (webMercTile(lat, 0, SAT_LEVEL).y - SAT_ROW0) * T;
+    // 经纬网格线
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 0.6;
+    ctx.font = "9px system-ui, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.textAlign = "left";
+    for(let lo=70; lo<=140; lo+=10){
+      const x = px(lo);
+      if(x<-5||x>CW+5) continue;
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,CH); ctx.stroke();
+      ctx.fillText(lo+"°E", x+3, 11);
+    }
+    for(let la=10; la<=60; la+=10){
+      const y = py(la);
+      if(y<-5||y>CH+5) continue;
+      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(CW,y); ctx.stroke();
+      ctx.fillText(la+"°N", 4, y+9);
+    }
+    ctx.restore();
+    // 日出/日落等时线（虚线；朝霞=日出、晚霞=日落；参考图"虚线=各地日落等时线"）
+    try{
+      const dateForIso = (state && state.days && state.days[state.selDay] && state.days[state.selDay].time) ? new Date(state.days[state.selDay].time+"T00:00:00Z") : new Date();
+      ctx.save();
+      ctx.strokeStyle = satType==="dawn" ? "rgba(140,220,255,0.5)" : "rgba(255,170,120,0.5)";
+      ctx.setLineDash([5,4]);
+      ctx.lineWidth = 1;
+      ctx.font = "9px system-ui, sans-serif";
+      ctx.fillStyle = satType==="dawn" ? "rgba(140,220,255,0.8)" : "rgba(255,170,120,0.8)";
+      ctx.textAlign = "left";
+      const iso = {};
+      for(let lo=73; lo<=135; lo+=0.5){
+        let min;
+        if(satType==="dawn"){
+          // 日出 = 正午对称：720 - (H*4) + (tz*60 - lon*4) - eot
+          const N = dayOfYear(dateForIso, 28800);
+          const rad = Math.PI/180;
+          const decl = -23.44*Math.cos(2*Math.PI/365*(N+10));
+          const B = 2*Math.PI/365*(N-81);
+          const eot = 9.87*Math.sin(2*B) - 7.53*Math.cos(B) - 1.5*Math.sin(B);
+          const cosH = (Math.sin((90-90.833)*rad) - Math.sin(40*rad)*Math.sin(decl*rad))
+                      / (Math.cos(40*rad)*Math.cos(decl*rad));
+          const H = Math.acos(clamp(cosH,-1,1))/rad;
+          min = 720 - H*4 - eot + 8*60 - lo*4;
+        } else {
+          min = sunTimes(40, lo, dateForIso, 28800, 90.833);
+        }
+        min = ((min%1440)+1440)%1440;
+        const half = Math.round(min/30)*30;
+        if(!iso[half]) iso[half] = [];
+        iso[half].push(lo);
+      }
+      Object.keys(iso).map(Number).sort((a,b)=>a-b).forEach(half=>{
+        if(satType==="dawn" && (half<4*60 || half>8*60)) return;
+        if(satType==="dusk" && (half<16*60 || half>21*60)) return;
+        const lons = iso[half];
+        const x = px(lons[Math.floor(lons.length/2)]);
+        if(x<-5||x>CW+5) return;
+        const hh = String(Math.floor(half/60)).padStart(2,"0");
+        const mm = String(half%60).padStart(2,"0");
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CH); ctx.stroke();
+        ctx.fillText((satType==="dawn"?"日出":"日落")+hh+":"+mm, x+3, 12);
+      });
+      ctx.restore();
+    }catch(e){}
+    // 城市名称标注（70+ 城市）
+    ctx.save();
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.strokeStyle = "rgba(10,14,30,0.8)";
+    ctx.lineWidth = 2;
+    ctx.textAlign = "center";
+    REGIONAL_CITIES.forEach(c=>{
+      const x = px(c.lon), y = py(c.lat);
+      if(x<-5||x>CW+5||y<-5||y>CH+5) return;
+      ctx.strokeText(c.name, x, y-6);
+      ctx.fillText(c.name, x, y-6);
+    });
+    ctx.restore();
+    // 时间戳
+    tag.textContent = satFrame ? ("葵花9 云图 " + satFrame.slice(0,16).replace("T"," ")) : "卫星云图";
+  } catch(e){
+    tag.textContent = "卫星云图加载失败";
+  } finally {
+    satLoading = false;
+  }
+}
+
+// 卫星图：朝霞/晚霞切换
+function initSat(){
+  document.querySelectorAll("#satControls .chip").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      if(satType === b.dataset.sattype) return;
+      document.querySelectorAll("#satControls .chip").forEach(x=>{
+        x.style.borderColor = "rgba(100,200,255,.3)";
+        x.style.color = "#cfe3ff";
+      });
+      b.style.borderColor = "#5ec2ff";
+      b.style.color = "#ffffff";
+      satType = b.dataset.sattype;
+      satFrame = null;
+      renderSatMap();
+    });
+  });
+  // 页面加载后渲染
+  setTimeout(()=>{ renderSatMap(); }, 1200);
+}
+
 /* ================= 全国分布图 ================= */
-// 全国所有省会城市 + 直辖市（含偏远地区）
+// 全国 70+ 城市（参考专业预测图：含主要地级市/偏远地区），覆盖中国全境
 const REGIONAL_CITIES = [
   // 直辖市
   {name:"北京", lat:39.9042, lon:116.4074},
   {name:"上海", lat:31.2304, lon:121.4737},
   {name:"天津", lat:39.3434, lon:117.3616},
   {name:"重庆", lat:29.5630, lon:106.5516},
-  // 华北
-  {name:"石家庄", lat:38.0428, lon:114.5149},
-  {name:"太原", lat:37.8706, lon:112.5489},
-  {name:"呼和浩特", lat:40.8424, lon:111.7492},
   // 东北
-  {name:"沈阳", lat:41.8057, lon:123.4315},
-  {name:"长春", lat:43.8171, lon:125.3235},
+  {name:"漠河", lat:52.97, lon:122.54},
+  {name:"黑河", lat:50.25, lon:127.53},
+  {name:"齐齐哈尔", lat:47.35, lon:123.92},
+  {name:"大庆", lat:46.59, lon:125.10},
   {name:"哈尔滨", lat:45.8038, lon:126.5349},
+  {name:"牡丹江", lat:44.55, lon:129.63},
+  {name:"延吉", lat:42.91, lon:129.51},
+  {name:"长春", lat:43.8171, lon:125.3235},
+  {name:"沈阳", lat:41.8057, lon:123.4315},
+  {name:"大连", lat:38.9140, lon:121.6147},
+  {name:"丹东", lat:40.12, lon:124.38},
+  // 华北
+  {name:"张家口", lat:40.82, lon:114.88},
+  {name:"承德", lat:40.95, lon:117.96},
+  {name:"秦皇岛", lat:39.94, lon:119.60},
+  {name:"唐山", lat:39.63, lon:118.18},
+  {name:"石家庄", lat:38.0428, lon:114.5149},
+  {name:"保定", lat:38.87, lon:115.46},
+  {name:"太原", lat:37.8706, lon:112.5489},
+  {name:"大同", lat:40.11, lon:113.30},
+  {name:"临汾", lat:36.08, lon:111.52},
+  {name:"呼和浩特", lat:40.8424, lon:111.7492},
+  {name:"包头", lat:40.66, lon:109.84},
+  {name:"赤峰", lat:42.26, lon:118.89},
+  {name:"榆林", lat:38.29, lon:109.73},
   // 华东
   {name:"南京", lat:32.0603, lon:118.7969},
   {name:"杭州", lat:30.2741, lon:120.1551},
@@ -1984,25 +2240,82 @@ const REGIONAL_CITIES = [
   {name:"福州", lat:26.0745, lon:119.2965},
   {name:"南昌", lat:28.6820, lon:115.8579},
   {name:"济南", lat:36.6512, lon:117.1201},
+  {name:"青岛", lat:36.0671, lon:120.3826},
+  {name:"烟台", lat:37.4638, lon:121.4479},
+  {name:"东营", lat:37.43, lon:118.67},
+  {name:"潍坊", lat:36.71, lon:119.16},
+  {name:"连云港", lat:34.60, lon:119.22},
+  {name:"盐城", lat:33.35, lon:120.16},
+  {name:"淮安", lat:33.60, lon:119.02},
+  {name:"徐州", lat:34.26, lon:117.18},
+  {name:"临沂", lat:35.10, lon:118.36},
+  {name:"济宁", lat:35.41, lon:116.59},
+  {name:"聊城", lat:36.46, lon:115.99},
+  {name:"德州", lat:37.43, lon:116.36},
+  {name:"湖州", lat:30.89, lon:120.09},
+  {name:"无锡", lat:31.49, lon:120.31},
+  {name:"芜湖", lat:31.35, lon:118.43},
+  {name:"安庆", lat:30.51, lon:117.06},
+  {name:"九江", lat:29.71, lon:115.99},
   // 华中/华南
   {name:"郑州", lat:34.7466, lon:113.6254},
+  {name:"洛阳", lat:34.62, lon:112.45},
   {name:"武汉", lat:30.5928, lon:114.3055},
+  {name:"襄阳", lat:32.01, lon:112.14},
+  {name:"南阳", lat:32.99, lon:112.53},
+  {name:"宜昌", lat:30.69, lon:111.29},
+  {name:"岳阳", lat:29.36, lon:113.13},
+  {name:"常德", lat:29.03, lon:111.70},
   {name:"长沙", lat:28.2282, lon:112.9388},
+  {name:"衡阳", lat:26.90, lon:112.61},
   {name:"广州", lat:23.1291, lon:113.2644},
   {name:"深圳", lat:22.5431, lon:114.0579},
+  {name:"汕头", lat:23.35, lon:116.68},
+  {name:"江门", lat:22.58, lon:113.08},
+  {name:"湛江", lat:21.27, lon:110.36},
   {name:"南宁", lat:22.8170, lon:108.3665},
+  {name:"柳州", lat:24.33, lon:109.43},
+  {name:"桂林", lat:25.27, lon:110.29},
   {name:"海口", lat:20.0440, lon:110.1999},
+  {name:"三亚", lat:18.25, lon:109.51},
+  {name:"厦门", lat:24.4798, lon:118.0894},
+  {name:"台北", lat:25.0330, lon:121.5654},
   // 西南
   {name:"成都", lat:30.5728, lon:104.0668},
+  {name:"绵阳", lat:31.47, lon:104.68},
+  {name:"宜宾", lat:28.75, lon:104.63},
   {name:"贵阳", lat:26.6470, lon:106.6302},
+  {name:"遵义", lat:27.73, lon:106.93},
   {name:"昆明", lat:25.0389, lon:102.7183},
+  {name:"大理", lat:25.61, lon:100.27},
+  {name:"丽江", lat:26.86, lon:100.23},
   {name:"拉萨", lat:29.6520, lon:91.1721},
+  {name:"林芝", lat:29.65, lon:94.36},
+  {name:"昌都", lat:31.14, lon:97.17},
+  {name:"那曲", lat:31.48, lon:92.06},
+  {name:"阿里", lat:32.50, lon:80.10},
   // 西北
   {name:"西安", lat:34.3416, lon:108.9398},
+  {name:"宝鸡", lat:34.36, lon:107.14},
   {name:"兰州", lat:36.0611, lon:103.8343},
+  {name:"武威", lat:37.93, lon:102.63},
   {name:"西宁", lat:36.6171, lon:101.7782},
   {name:"银川", lat:38.4872, lon:106.2309},
-  {name:"乌鲁木齐", lat:43.8256, lon:87.6168}
+  {name:"乌鲁木齐", lat:43.8256, lon:87.6168},
+  {name:"克拉玛依", lat:45.60, lon:84.87},
+  {name:"塔城", lat:46.75, lon:82.98},
+  {name:"阿勒泰", lat:47.85, lon:88.14},
+  {name:"博乐", lat:44.90, lon:82.07},
+  {name:"伊宁", lat:43.92, lon:81.28},
+  {name:"库尔勒", lat:41.77, lon:86.15},
+  {name:"库车", lat:41.72, lon:82.96},
+  {name:"阿克苏", lat:41.17, lon:80.26},
+  {name:"喀什", lat:39.47, lon:75.99},
+  {name:"和田", lat:37.11, lon:79.92},
+  {name:"德令哈", lat:37.37, lon:97.36},
+  {name:"格尔木", lat:36.40, lon:94.90},
+  {name:"敦煌", lat:40.14, lon:94.66},
+  {name:"塔什库尔干", lat:37.77, lon:75.23}
 ];
 let regionalMap = null;
 let regionalBaseLayer = null;
@@ -2174,7 +2487,27 @@ function drawCloudCanvas(cv, grid, LATS, LONS, geo){
     drawLines(ctx);
     ctx.stroke();
   }
-  // 城市点（白描边小圆）
+  // 经纬网格线
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.lineWidth = 0.6;
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.42)";
+  ctx.textAlign = "left";
+  for(let lo=70; lo<=140; lo+=10){
+    const x = px(lo);
+    if(x<-5||x>W+5) continue;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
+    ctx.fillText(lo+"°E", x+3, 11);
+  }
+  for(let la=10; la<=60; la+=10){
+    const y = py(la);
+    if(y<-5||y>H+5) continue;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+    ctx.fillText(la+"°N", 4, y+9);
+  }
+  ctx.restore();
+  // 城市点（白描边小圆）+ 名称标注
   REGIONAL_CITIES.forEach(c=>{
     const x = px(c.lon), y = py(c.lat);
     ctx.beginPath();
@@ -2182,6 +2515,15 @@ function drawCloudCanvas(cv, grid, LATS, LONS, geo){
     ctx.fillStyle = "rgba(255,255,255,0.85)";
     ctx.fill();
   });
+  ctx.save();
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  ctx.textAlign = "center";
+  REGIONAL_CITIES.forEach(c=>{
+    const x = px(c.lon), y = py(c.lat);
+    ctx.fillText(c.name, x, y - 8);
+  });
+  ctx.restore();
   ctx.fillStyle = "rgba(255,255,255,0.45)";
   ctx.font = "9px system-ui, sans-serif";
   ctx.textAlign = "right";
@@ -2225,7 +2567,6 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     const a = 0.10 + 0.62*t;
     return "rgba("+Math.round(r)+","+Math.round(g)+","+Math.round(b)+","+a.toFixed(3)+")";
   };
-  // 绘制热力（先整图，再用中国轮廓 mask 裁剪）
   if(geo){
     // 先绘制省界多边形为不透明白底，作为 mask
     const mask = document.createElement("canvas");
@@ -2308,26 +2649,86 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     ctx.lineWidth = 1.5;
     ctx.strokeRect(0, 0, W, H);
   }
-  // 城市圆点 + 指数（优先用真实获取的城市指数，其次网格插值）
+  // 经纬网格线（参考专业预测图）
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.16)";
+  ctx.lineWidth = 0.6;
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.textAlign = "left";
+  for(let lo=70; lo<=140; lo+=10){
+    const x = px(lo);
+    if(x<-5||x>W+5) continue;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
+    ctx.fillText(lo+"°E", x+3, 11);
+  }
+  for(let la=10; la<=60; la+=10){
+    const y = py(la);
+    if(y<-5||y>H+5) continue;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+    ctx.fillText(la+"°N", 4, y+9);
+  }
+  ctx.restore();
+  // 日落等时线（虚线，沿经度标注各地日落时刻；参考图“虚线=各地日落等时线”）
+  try{
+    const dateForIso = (state && state.days && state.days[state.selDay] && state.days[state.selDay].time) ? new Date(state.days[state.selDay].time+"T00:00:00Z") : new Date();
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.4)";
+    ctx.setLineDash([5,4]);
+    ctx.lineWidth = 1;
+    ctx.font = "9px system-ui, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.textAlign = "left";
+    const iso = {};
+    for(let lo=73; lo<=135; lo+=0.5){
+      const min = sunTimes(40, lo, dateForIso, 28800, 90.833);
+      const half = Math.round(min/30)*30;
+      if(!iso[half]) iso[half] = [];
+      iso[half].push(lo);
+    }
+    Object.keys(iso).map(Number).sort((a,b)=>a-b).forEach(half=>{
+      if(half < 16*60 || half > 21*60) return;
+      const lons = iso[half];
+      const x = px(lons[Math.floor(lons.length/2)]);
+      if(x<-5||x>W+5) return;
+      const hh = String(Math.floor(half/60)).padStart(2,"0");
+      const mm = String(half%60).padStart(2,"0");
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      ctx.fillText("日落"+hh+":"+mm, x+3, H-6);
+    });
+    ctx.restore();
+  }catch(e){}
+  // 逐格百分比数值（8° 网格点标注，参考图逐格百分比）
+  ctx.save();
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.textAlign = "center";
+  for(let i=0;i<LATS.length;i+=2){
+    for(let j=0;j<LONS.length;j+=2){
+      const la=LATS[i], lo=LONS[j];
+      const v = interp(la, lo);
+      if(v==null) continue;
+      ctx.fillText(Math.round(v)+"%", px(lo), py(la)+3);
+    }
+  }
+  ctx.restore();
+  // 城市圆点 + 名称标注（参考图：网格标百分比、城市标名称）
   REGIONAL_CITIES.forEach(c=>{
     const x = px(c.lon), y = py(c.lat);
     let v = cityIdx && cityIdx[c.name]!=null ? cityIdx[c.name] : interp(c.lat, c.lon);
     if(v!=null && typeof v === "object") v = v.vivid;
     if(v==null) return;
     ctx.beginPath();
-    ctx.arc(x, y, 7, 0, Math.PI*2);
+    ctx.arc(x, y, 6, 0, Math.PI*2);
     ctx.fillStyle = vividColor(v).replace(/[^,]+\)$/, "1)");
     ctx.fill();
     ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.4;
     ctx.stroke();
     ctx.fillStyle = "#fff";
-    ctx.font = "600 13px system-ui, sans-serif";
+    ctx.font = "600 11px system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(c.name, x, y - 11);
-    ctx.font = "10px system-ui, sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.85)";
-    ctx.fillText(v + "%", x, y + 19);
+    ctx.fillText(c.name, x, y - 10);
   });
   // 南海诸岛小图（简化标注）
   ctx.fillStyle = "rgba(255,255,255,0.5)";
@@ -2366,6 +2767,7 @@ function initModel(){
   initSource();
   initKey();
   initLoc();
+  initSat();
   loadCity(state.city);
   // 定时刷新倒计时
   setInterval(()=>{ if(state.days.length) renderHero(); }, 30000);
