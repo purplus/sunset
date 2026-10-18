@@ -2086,9 +2086,89 @@ async function renderRegionalMap(){
     } else {
       if(els.regionalNote) els.regionalNote.textContent = "已加载 " + okCount + "/" + REGIONAL_CITIES.length + " 城 · 取各城日落 18:00 云况";
     }
+    // ---- 实时云量覆盖层：全国 3° 网格当前云量 → canvas 平滑插值 → 半透明云图叠加 ----
+    renderCloudOverlay();
   }catch(e){
     console.error("regional map err:", e);
     if(els.regionalNote) els.regionalNote.textContent = "分布图加载失败，请刷新重试";
+  }
+}
+
+/* ---- 实时云量覆盖层（Open-Meteo 网格云量 + canvas 插值，模拟卫星云图效果） ---- */
+async function renderCloudOverlay(){
+  try{
+    if(!regionalMap) return;
+    if(els.regionalNote) els.regionalNote.textContent = "正在获取实时云量…";
+    // 中国区域网格：纬度 18~54，经度 73~135，步长 3°（约 13×21=273 点，8 路并发）
+    const LATS = [], LONS = [];
+    for(let la=18; la<=54; la+=3) LATS.push(la);
+    for(let lo=73; lo<=135; lo+=3) LONS.push(lo);
+    const grid = {};
+    let done = 0, total = LATS.length*LONS.length;
+    const workers = Array.from({length:8}, (_,wi)=> (async ()=>{
+      for(let i=wi; i<total; i+=8){
+        const la = LATS[Math.floor(i/LONS.length)], lo = LONS[i%LONS.length];
+        try{
+          const ac = new AbortController();
+          const t = setTimeout(()=>ac.abort(), 12000);
+          const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+la+"&longitude="+lo+"&current=cloud_cover&forecast_days=1&timezone=auto", {signal: ac.signal});
+          clearTimeout(t);
+          if(res.ok){
+            const w = await res.json();
+            const cc = w.current && w.current.cloud_cover;
+            if(cc!=null) grid[la+","+lo] = cc;
+          }
+        }catch(e){}
+        done++;
+        if(els.regionalNote && done%16===0) els.regionalNote.textContent = "获取实时云量… " + Math.round(done/total*100) + "%";
+      }
+    }));
+    await Promise.all(workers);
+    if(Object.keys(grid).length < 20){
+      if(els.regionalNote) els.regionalNote.textContent = "云量数据不足，仅显示城市指数";
+      return;
+    }
+    // canvas 插值：白=云量100% 透明=0%，平滑过渡
+    const W = 480, H = Math.round(W*(36/62));
+    const cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext("2d");
+    const img = ctx.createImageData(W, H);
+    const interp = (la, lo)=>{
+      // 双线性插值最近 4 网格点
+      let i1=0; while(i1<LATS.length-1 && LATS[i1+1]<=la) i1++;
+      let j1=0; while(j1<LONS.length-1 && LONS[j1+1]<=lo) j1++;
+      const la0=LATS[i1], la1=LATS[i1+1], lo0=LONS[j1], lo1=LONS[j1+1];
+      const v00=grid[la0+","+lo0], v10=grid[la1+","+lo0], v01=grid[la0+","+lo1], v11=grid[la1+","+lo1];
+      if(v00==null&&v10==null&&v01==null&&v11==null) return null;
+      const f = (la-la0)/(la1-la0||1), g = (lo-lo0)/(lo1-lo0||1);
+      const top = (v00!=null?v00:50)*(1-g) + (v01!=null?v01:50)*g;
+      const bot = (v10!=null?v10:50)*(1-g) + (v11!=null?v11:50)*g;
+      return top*(1-f) + bot*f;
+    };
+    for(let y=0; y<H; y++){
+      const la = 54 - (y+0.5)/H*36; // 上北下南
+      for(let x=0; x<W; x++){
+        const lo = 73 + (x+0.5)/W*62;
+        const cc = interp(la, lo);
+        const i = (y*W+x)*4;
+        if(cc==null){ img.data[i+3]=0; continue; }
+        // 云量越大越白亮
+        const a = Math.max(0, Math.min(1, cc/100)) * 0.75;
+        img.data[i]=235; img.data[i+1]=238; img.data[i+2]=242; img.data[i+3]=Math.round(a*255);
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const url = cv.toDataURL("image/png");
+    // 清除旧覆盖层
+    if(window.__cloudOverlay){
+      regionalMap.removeLayer(window.__cloudOverlay);
+      window.__cloudOverlay = null;
+    }
+    window.__cloudOverlay = L.imageOverlay(url, [[18,73],[54,135]], {opacity:0.85, interactive:false}).addTo(regionalMap);
+    if(els.regionalNote) els.regionalNote.textContent = "城市指数已加载 · 实时云量叠加中（白色=有云）";
+  }catch(e){
+    console.error("cloud overlay err:", e);
   }
 }
 
