@@ -84,15 +84,16 @@
   .hero-body{display:flex;gap:28px;align-items:center;margin-top:6px;flex-wrap:wrap}
   .gauges-row{display:flex;gap:20px;flex-shrink:0}
 
-  .gauge{flex:0 0 auto;position:relative;width:190px;height:190px}
-  .gauge svg{width:100%;height:100%;transform:rotate(-90deg)}
+  .gauge{flex:0 0 auto;position:relative;width:190px;text-align:center}
+  .gauge svg{width:190px;height:190px;transform:rotate(-90deg)}
   .gauge .track{fill:none;stroke:rgba(150,160,200,.14);stroke-width:9}
   .gauge .arc{fill:none;stroke:url(#gGrad);stroke-width:9;stroke-linecap:round;
     stroke-dasharray:472;stroke-dashoffset:472;transition:stroke-dashoffset 1.1s cubic-bezier(.4,0,.2,1)}
-  .gauge .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
-  .gauge .num{font-size:60px;font-weight:700;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-  .gauge .denom{font-size:15px;color:var(--ink-3);margin-top:2px}
-  .gauge .lvl{margin-top:7px;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:500}
+  .gauge .center{position:absolute;top:0;left:0;right:0;height:190px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+  .gauge .num{font-size:64px;font-weight:700;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .gauge-label{text-align:center;margin-top:6px}
+  .gauge-label .denom{font-size:14px;color:var(--ink-3)}
+  .gauge-label .lvl{margin-top:6px;font-size:11px;padding:3px 10px;border-radius:20px;font-weight:500;display:inline-block}
 
   .hero-main{flex:1;min-width:280px}
   .verdict{font-size:21px;font-weight:500;line-height:1.4}
@@ -242,11 +243,13 @@
   @media (max-width:480px){
     .week{grid-template-columns:repeat(3,1fr)}
     .hero-body{gap:14px}
-    .gauge{width:120px;height:120px}
-    .gauge .num{font-size:40px}
-    .gauge .denom{font-size:11px}
-    .gauge .lvl{font-size:10px;padding:3px 8px;white-space:nowrap}
-    .gauges-row{gap:10px}
+    .gauge{width:115px}
+    .gauge svg{width:115px;height:115px}
+    .gauge .center{height:115px}
+    .gauge .num{font-size:42px}
+    .gauge-label .denom{font-size:11px}
+    .gauge-label .lvl{font-size:10px;padding:2px 8px}
+    .gauges-row{gap:16px}
     .times{gap:8px}
     .tcard{padding:9px 10px}
     .tcard .k{font-size:10px}
@@ -323,11 +326,8 @@
             <circle class="track" cx="95" cy="95" r="75"></circle>
             <circle class="arc" id="gaugeArc" cx="95" cy="95" r="75"></circle>
           </svg>
-          <div class="center">
-            <div class="num" id="indexNum">--</div>
-            <div class="denom">晚霞指数 / 100</div>
-            <div class="lvl" id="indexLvl"></div>
-          </div>
+          <div class="center"><div class="num" id="indexNum">--</div></div>
+          <div class="gauge-label"><div class="denom">晚霞指数 / 100</div><div class="lvl" id="indexLvl"></div></div>
         </div>
         <div class="gauge">
           <svg viewBox="0 0 190 190">
@@ -341,11 +341,8 @@
             <circle class="track" cx="95" cy="95" r="75"></circle>
             <circle class="arc" id="gaugeArcSR" cx="95" cy="95" r="75" style="stroke:url(#gGradSR)"></circle>
           </svg>
-          <div class="center">
-            <div class="num" id="indexNumSR">--</div>
-            <div class="denom">朝霞指数 / 100</div>
-            <div class="lvl" id="indexLvlSR"></div>
-          </div>
+          <div class="center"><div class="num" id="indexNumSR">--</div></div>
+          <div class="gauge-label"><div class="denom">朝霞指数 / 100</div><div class="lvl" id="indexLvlSR"></div></div>
         </div>
       </div>
       <div class="hero-main">
@@ -1242,7 +1239,7 @@ function renderFactors(d){
     {k:"高云", v:fmtPct(d.highC), u:"", note:"卷云类最易被染成金红", s:scoreCloud(d.highC==null?40:d.highC)},
     {k:"气溶胶 AOD", v:fmtAOD(d.aod), u:"", note:isMet?"MET Norway 无此数据":"CAMS 霾厚度，越低色彩越红", s:scoreAOD(d.aod)},
     {k:"能见度", v:fmtKm(d.vis), u:"", note:isWindy?"Windy 无直接值，由低云推导":"通透度影响色彩", s:scoreVis(d.vis)},
-    {k:"云底高度", v:d.cloudBase==null||isNaN(d.cloudBase)?"无低云":Math.round(d.cloudBase)+" m", u:"", note:(d.cloudBase==null||isNaN(d.cloudBase))?"真实 cloud_base，无低云时为 --":"云底高度 "+Math.round(d.cloudBase)+"m · 日落视线约 "+(d.cloudBase/0.0875/1000).toFixed(1)+"km 内无遮挡", s:50},
+    {k:"云底高度", v:d.cloudBase==null||isNaN(d.cloudBase)?"无":Math.round(d.cloudBase)+" m", u:"", note:(d.cloudBase==null||isNaN(d.cloudBase))?"当前无低云，无需遮挡判断":"云底高度 "+Math.round(d.cloudBase)+"m · 日落视线约 "+(d.cloudBase/0.0875/1000).toFixed(1)+"km 内无遮挡", s:50},
     {k:"地面风速", v:d.wind==null?"--":Math.round(d.wind)+" km/h", u:"", note:"大风易吹散云层", s:scoreWind(d.wind==null?10:d.wind)}
   ];
   els.factors.innerHTML = items.map(it=>`
@@ -1296,12 +1293,15 @@ function renderFactors(d){
     const vivid = Math.round(cloudFit*0.45 + heightFit*0.35 + layerFit*0.20);
     // 低云遮挡惩罚：低云>55% 扣 15
     const finalVivid = Math.max(0, Math.min(100, vivid - ((d0.lowC!=null && d0.lowC>55)?15:0)));
-    // 云高显示（供参考）
-    const cloudHStr = (d0.cloudBase!=null && !isNaN(d0.cloudBase)) ? Math.round(d0.cloudBase)+" m" : "无低云";
+    // 云高显示（准确的实时云底高度，没有就是无）
+    const cloudHStr = (d0.cloudBase!=null && !isNaN(d0.cloudBase)) ? Math.round(d0.cloudBase)+" m" : "无";
+    const heightNote = (d0.cloudBase!=null && !isNaN(d0.cloudBase))
+      ? "云高适合度 "+heightFit+"/100"
+      : "无低云，无法取云高";
     const detailItems = [
       {k:"鲜艳度", v:finalVivid+" / 100", u:"", note:finalVivid>75?"色彩预计饱和，出片概率高":finalVivid>55?"有一定色彩，值得蹲":finalVivid>35?"色彩平淡，参考性一般":"预计无色彩", s:finalVivid},
       {k:"云量", v:(d0.cloud!=null?Math.round(d0.cloud):"--")+"%", u:"", note:"总云量 "+cloudFit+"/100 适合度", s:cloudFit},
-      {k:"云高", v:cloudHStr, u:"", note:"云高适合度 "+heightFit+"/100", s:heightFit},
+      {k:"云高", v:cloudHStr, u:"", note:heightNote, s:heightFit},
       {k:"三层占比", v:"低"+(d0.lowC!=null?Math.round(d0.lowC):"--")+"% 中"+(d0.midC!=null?Math.round(d0.midC):"--")+"% 高"+(d0.highC!=null?Math.round(d0.highC):"--")+"%", u:"", note:"中高云占比适合度 "+layerFit+"/100", s:layerFit}
     ];
     els.detailForecast.innerHTML = detailItems.map(it=>`
@@ -1317,37 +1317,40 @@ function renderFactors(d){
   if(d0 && els.cloudDistanceBox){
     const R = 6371; // 地球半径 km
     const hObs = (state.city.elev || 0) / 1000; // 观测点海拔 km（实时）
-    // 实时云高：优先真实 cloud_base；无低云时按云量分布估算主发光云层高度
-    let cloudH, cloudHSrc;
-    if(d0.cloudBase != null && !isNaN(d0.cloudBase)){
-      cloudH = d0.cloudBase/1000;
-      cloudHSrc = "实时云底高度";
-    } else {
-      // 无低云：根据中云/高云云量加权估算（中云典型 3km，高云典型 7km）
-      const midW = (d0.midC||0)/100, highW = (d0.highC||0)/100;
-      const total = midW + highW;
-      cloudH = total>0 ? (midW*3 + highW*7)/total : 3;
-      cloudHSrc = total>0 ? "按中/高云云量估算" : "无低云且无中高云（晴天）";
-    }
-    // 近距：地平线云距离（云刚好出现在地平线上）
-    const dNear = Math.sqrt(2 * R * (cloudH + hObs));
-    // 远距：最远无云距离（太阳高度角约 -7.5°，光线还能照亮云）
-    const sunAngle = 7.5; // 度
-    const dFar = dNear + cloudH / Math.tan(sunAngle * Math.PI / 180);
-    // 光线遮挡判断：低云多说明近处云多（可能遮挡），中云/高云是染色层
-    const blockRisk = (d0.lowC!=null && d0.lowC>55) ? "⚠ 低云偏多，近距内光线可能被遮挡" : (d0.lowC!=null && d0.lowC>25) ? "低云中等，需关注近距云况" : "低云少，近距光线通畅";
-    els.cloudDistanceBox.innerHTML = `
+    // 实时云高：只用真实 cloud_base，没有就是"无"
+    const hasCloudBase = d0.cloudBase != null && !isNaN(d0.cloudBase);
+    let html;
+    if(hasCloudBase){
+      const cloudH = d0.cloudBase/1000;
+      // 近距：地平线云距离（云刚好出现在地平线上）
+      const dNear = Math.sqrt(2 * R * (cloudH + hObs));
+      // 远距：最远无云距离（太阳高度角约 -7.5°，光线还能照亮云）
+      const sunAngle = 7.5; // 度
+      const dFar = dNear + cloudH / Math.tan(sunAngle * Math.PI / 180);
+      const blockRisk = (d0.lowC!=null && d0.lowC>55) ? "⚠ 低云偏多，近距内光线可能被遮挡" : (d0.lowC!=null && d0.lowC>25) ? "低云中等，需关注近距云况" : "低云少，近距光线通畅";
+      html = `
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:10px">
         <div style="color:var(--ink-2)">观测点海拔：<b style="color:#fff">${Math.round(hObs*1000)} m</b> <span style="color:var(--ink-3);font-size:11px">（实时）</span></div>
-        <div style="color:var(--ink-2)">云高：<b style="color:#fff">${(cloudH*1000).toFixed(0)} m</b> <span style="color:var(--ink-3);font-size:11px">${cloudHSrc}</span></div>
+        <div style="color:var(--ink-2)">云高：<b style="color:#fff">${Math.round(d0.cloudBase)} m</b> <span style="color:var(--ink-3);font-size:11px">实时云底高度</span></div>
       </div>
       <div style="color:#ffcc44;font-weight:bold">近距（地平线云距离）：${Math.round(dNear)} km</div>
       <div style="color:var(--ink-3);font-size:12px;margin-bottom:6px">→ 这个距离以内最好有云，会被低角度阳光照亮变红</div>
       <div style="color:#ff6b6b;font-weight:bold">远距（最远无云距离）：${Math.round(dFar)} km</div>
       <div style="color:var(--ink-3);font-size:12px;margin-bottom:6px">→ ${Math.round(dNear)} km 到 ${Math.round(dFar)} km 之间必须无云，否则遮挡光线</div>
       <div style="color:${d0.lowC>55?'#ff6b6b':'var(--ink-2)'};font-size:12px;margin-top:4px">${blockRisk}</div>
-      <div style="color:var(--ink-3);font-size:11px;margin-top:6px">海拔来自实时地形数据 · 云高随所选日期的预报实时变化</div>
+      <div style="color:var(--ink-3);font-size:11px;margin-top:6px">海拔来自实时地形数据 · 云高来自所选日期的实时预报</div>
     `;
+    } else {
+      html = `
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+        <div style="color:var(--ink-2)">观测点海拔：<b style="color:#fff">${Math.round(hObs*1000)} m</b> <span style="color:var(--ink-3);font-size:11px">（实时）</span></div>
+        <div style="color:var(--ink-2)">云高：<b style="color:#888">无</b> <span style="color:var(--ink-3);font-size:11px">当前无低云</span></div>
+      </div>
+      <div style="color:var(--ink-2);font-size:13px;margin-bottom:6px">当前预报无低云，无云底高度数据，无法计算近距/远距。</div>
+      <div style="color:var(--ink-3);font-size:11px;margin-top:4px">海拔来自实时地形数据 · 云高随所选日期的预报实时变化</div>
+    `;
+    }
+    els.cloudDistanceBox.innerHTML = html;
   }
 }
 function iconFor(k){
