@@ -1253,24 +1253,60 @@ function renderFactors(d){
       <div class="fnote">${it.note}</div>
     </div>`).join("");
 
-  // 详细预测（sunsetbot 风格）
+  // 详细预测：基于云量+云高+三层云占比推算鲜艳度
   const d0 = state.days[state.selDay];
   if(d0 && els.detailForecast){
-    // 鲜艳度：中云+高云综合，低云扣分
-    const vivid = Math.round((scoreCloudMid(d0.midC||40)*0.5 + scoreCloudHigh(d0.highC||40)*0.5) * (1 - (d0.lowC||0)/200));
-    // 气溶胶：AOD 适中最好
-    const aodVal = d0.aod!=null ? d0.aod : 0.2;
-    const aodScore = aodVal < 0.1 ? 80 : aodVal < 0.3 ? 100 : aodVal < 0.5 ? 60 : 30;
-    // 不确定性：简化版（基于数据完整度）
-    const uncertainty = d0.lowC==null||d0.midC==null||d0.highC==null ? 30 : 15;
+    // ===== 鲜艳度推算（依据：云量 × 云高 × 中低高云占比）=====
+    // 1. 云量适合度：总云量太少没东西可染(0分)，40-70%最佳(100分)，太多挡光(渐减)
+    const totalC = (d0.midC!=null?d0.midC:0) + (d0.highC!=null?d0.highC:0);
+    const totalCloud = d0.cloud!=null ? d0.cloud : totalC;
+    let cloudFit;
+    if(totalCloud==null) cloudFit = 50;
+    else if(totalCloud < 10) cloudFit = 15;         // 晴空无云
+    else if(totalCloud < 30) cloudFit = 45;         // 云太少
+    else if(totalCloud < 45) cloudFit = 85;         // 渐入佳境
+    else if(totalCloud < 70) cloudFit = 100;        // 最佳区间
+    else if(totalCloud < 85) cloudFit = 75;         // 云偏多
+    else cloudFit = 45;                              // 阴天挡光
+    // 2. 云高适合度：不同高度染色效果不同（高云卷云最易染红，中云次之，低云挡光）
+    let heightFit = 60;
+    if(d0.cloudBase!=null && !isNaN(d0.cloudBase)){
+      const h = d0.cloudBase; // 米
+      if(h < 500) heightFit = 25;       // 贴地低云，挡光严重
+      else if(h < 1500) heightFit = 45; // 低云
+      else if(h < 3000) heightFit = 70; // 中低云
+      else if(h < 6000) heightFit = 90; // 中云，较理想
+      else heightFit = 100;              // 高云卷云，最易染红
+    } else {
+      // 无低云时按中/高云占比估：中云多→较好，高云多→最佳
+      const midW = (d0.midC||0), highW = (d0.highC||0);
+      const total = midW + highW;
+      if(total>0) heightFit = Math.round((midW*75 + highW*95)/total);
+    }
+    // 3. 三层云占比适合度：中高云占比越高越易出彩，低云占比高则扣分
+    const sum = (d0.lowC!=null?d0.lowC:0) + (d0.midC!=null?d0.midC:0) + (d0.highC!=null?d0.highC:0);
+    let layerFit = 50;
+    if(sum>0){
+      const lowShare = (d0.lowC!=null?d0.lowC:0)/sum;
+      const midShare = (d0.midC!=null?d0.midC:0)/sum;
+      const highShare = (d0.highC!=null?d0.highC:0)/sum;
+      layerFit = Math.round(100*(midShare*0.55 + highShare*0.40 + lowShare*0.05));
+    }
+    // 合成鲜艳度：云量45% + 云高35% + 三层占比20%
+    const vivid = Math.round(cloudFit*0.45 + heightFit*0.35 + layerFit*0.20);
+    // 低云遮挡惩罚：低云>55% 扣 15
+    const finalVivid = Math.max(0, Math.min(100, vivid - ((d0.lowC!=null && d0.lowC>55)?15:0)));
+    // 云高显示（供参考）
+    const cloudHStr = (d0.cloudBase!=null && !isNaN(d0.cloudBase)) ? Math.round(d0.cloudBase)+" m" : "无低云";
     const detailItems = [
-      {k:"鲜艳度", v:vivid+" / 100", u:"", note:vivid>70?"色彩饱和度高，易出大片":vivid>50?"色彩一般":"色彩偏淡", s:vivid},
-      {k:"气溶胶", v:aodVal.toFixed(2), u:"", note:aodScore>80?"AOD适中，通透度好":aodScore>50?"AOD偏高，可能发灰":"AOD过高，天空污浊", s:aodScore},
-      {k:"不确定性", v:uncertainty+"%", u:"", note:uncertainty<20?"预报可信度高":"数据不完整，参考性有限", s:100-uncertainty}
+      {k:"鲜艳度", v:finalVivid+" / 100", u:"", note:finalVivid>75?"色彩预计饱和，出片概率高":finalVivid>55?"有一定色彩，值得蹲":finalVivid>35?"色彩平淡，参考性一般":"预计无色彩", s:finalVivid},
+      {k:"云量", v:(d0.cloud!=null?Math.round(d0.cloud):"--")+"%", u:"", note:"总云量 "+cloudFit+"/100 适合度", s:cloudFit},
+      {k:"云高", v:cloudHStr, u:"", note:"云高适合度 "+heightFit+"/100", s:heightFit},
+      {k:"三层占比", v:"低"+(d0.lowC!=null?Math.round(d0.lowC):"--")+"% 中"+(d0.midC!=null?Math.round(d0.midC):"--")+"% 高"+(d0.highC!=null?Math.round(d0.highC):"--")+"%", u:"", note:"中高云占比适合度 "+layerFit+"/100", s:layerFit}
     ];
     els.detailForecast.innerHTML = detailItems.map(it=>`
       <div class="factor">
-        <div class="fk">${it.k}</div>
+        <div class="fk">${iconFor(it.k)} ${it.k}</div>
         <div class="fv">${it.v}</div>
         <div class="bar"><i style="width:${it.s}%"></i></div>
         <div class="fnote">${it.note}</div>
@@ -1320,9 +1356,10 @@ function iconFor(k){
     "湿度":'<path d="M12 3s6 5.5 6 10a6 6 0 0 1-12 0c0-4.5 6-10 6-10z" stroke="currentColor" fill="none" stroke-width="1.6" stroke-linejoin="round"/>',
     "能见":'<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z" stroke="currentColor" fill="none" stroke-width="1.6"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/>',
     "风速":'<path d="M4 9h9a2.5 2.5 0 1 0-2.5-2.5M4 13h13a2.5 2.5 0 1 1-2.5 2.5M3 17h7" stroke="currentColor" fill="none" stroke-width="1.6" stroke-linecap="round"/>',
-    "cloudBase":'<path d="M3 16h18M6 16l2.5-7 3.5 4.5L16 9l4 7" stroke="currentColor" fill="none" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>'
+    "cloudBase":'<path d="M3 16h18M6 16l2.5-7 3.5 4.5L16 9l4 7" stroke="currentColor" fill="none" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>',
+    "占比":'<rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" fill="none" stroke-width="1.6"/><path d="M4 14h16M4 9h16M4 4v16" stroke="currentColor" fill="none" stroke-width="1.6" opacity=".5"/>'
   };
-  const key = k.includes("云底")?"cloudBase":k.includes("云")?"云":k.includes("湿度")?"湿度":k.includes("能见")?"能见":"风速";
+  const key = k.includes("云底")?"cloudBase":k.includes("占比")?"占比":k.includes("云")?"云":k.includes("湿度")?"湿度":k.includes("能见")?"能见":"风速";
   return '<svg viewBox="0 0 24 24">'+paths[key]+'</svg>';
 }
 
