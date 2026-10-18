@@ -701,8 +701,9 @@ async function fetchOpenMeteo(lat, lon, model){
   ]);
   if(!res.ok) throw new Error("open-meteo fetch failed "+res.status);
   const w = await res.json();
-  // 实时海拔：Open-Meteo 返回 elevation（米）
+  // 实时海拔 + 真实时区：Open-Meteo 返回 elevation 和 utc_offset_seconds（秒）
   if(w.elevation!=null) state.city.elev = w.elevation;
+  if(w.utc_offset_seconds!=null) state.city.tz = w.utc_offset_seconds;
   // 把 AOD 按小时对齐合并进来
   if(aodRes.ok){
     const aq = await aodRes.json();
@@ -1013,6 +1014,14 @@ function fmtDate(d){
 
 function renderSelect(){
   els.citySel.innerHTML = "";
+  // 若当前是定位城市（不在预设列表），先加一个选项
+  const inList = CITIES.some(c=>c.n===state.city.n);
+  if(!inList){
+    const o = document.createElement("option");
+    o.value = state.city.n; o.textContent = "📍 "+state.city.n;
+    o.selected = true;
+    els.citySel.appendChild(o);
+  }
   CITIES.forEach(c=>{
     const o = document.createElement("option");
     o.value = c.n; o.textContent = c.n;
@@ -1583,7 +1592,7 @@ async function reverseGeocode(lat, lon){
   }
   return placeName;
 }
-/* ---- 获取实时海拔 ---- */
+/* ---- 获取实时海拔 + 真实时区偏移（Open-Meteo 按定位地点返回） ---- */
 async function fetchElevation(lat, lon){
   try {
     const ac = new AbortController();
@@ -1591,19 +1600,22 @@ async function fetchElevation(lat, lon){
     const el = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+lat+"&longitude="+lon+"&hourly=temperature_2m&forecast_days=1", {signal: ac.signal});
     clearTimeout(t);
     const elData = await el.json();
-    return elData.elevation || null;
-  } catch(e){ return null; }
+    return {
+      elev: elData.elevation || null,
+      tz: elData.utc_offset_seconds || null
+    };
+  } catch(e){ return {elev:null, tz:null}; }
 }
 /* ---- 按坐标定位：逆地理 + 海拔 + 加载 ---- */
 async function locateByCoords(lat, lon, tag){
   const placeName = await reverseGeocode(lat, lon);
-  const elev = await fetchElevation(lat, lon);
-  const tz = -(new Date().getTimezoneOffset())*60;
-  const city = {n:placeName, lat, lon, tz:tz||28800, elev};
+  const {elev, tz} = await fetchElevation(lat, lon);
+  // 用定位地点的真实时区（Open-Meteo utc_offset_seconds），而不是浏览器本地时区
+  const city = {n:placeName, lat, lon, tz: tz||28800, elev};
   state.elevation = elev;
   await loadCity(city);
   // 记住本次定位，下次打开直接使用
-  try{ localStorage.setItem("sunset_last_loc", JSON.stringify({lat, lon, name:placeName, tz:tz||28800, elev, ts:Date.now()})); }catch(e){}
+  try{ localStorage.setItem("sunset_last_loc", JSON.stringify({lat, lon, name:placeName, tz: tz||28800, elev, ts:Date.now()})); }catch(e){}
   showToast((tag||"已定位")+"："+placeName+(elev?(" · 海拔"+Math.round(elev)+"m"):""));
   return placeName;
 }
