@@ -82,6 +82,7 @@
     background:rgba(255,140,66,.14);color:var(--orange);border:1px solid rgba(255,140,66,.3)
   }
   .hero-body{display:flex;gap:28px;align-items:center;margin-top:6px;flex-wrap:wrap}
+  .gauges-row{display:flex;gap:20px;flex-shrink:0}
 
   .gauge{flex:0 0 auto;position:relative;width:190px;height:190px}
   .gauge svg{width:100%;height:100%;transform:rotate(-90deg)}
@@ -297,22 +298,42 @@
       <div class="hero-date" id="heroDate"></div>
     </div>
     <div class="hero-body">
-      <div class="gauge">
-        <svg viewBox="0 0 190 190">
-          <defs>
-            <linearGradient id="gGrad" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stop-color="#ffc36b"/>
-              <stop offset="50%" stop-color="#ff5e62"/>
-              <stop offset="100%" stop-color="#9a5fd0"/>
-            </linearGradient>
-          </defs>
-          <circle class="track" cx="95" cy="95" r="75"></circle>
-          <circle class="arc" id="gaugeArc" cx="95" cy="95" r="75"></circle>
-        </svg>
-        <div class="center">
-          <div class="num" id="indexNum">--</div>
-          <div class="denom">彩霞指数 / 100</div>
-          <div class="lvl" id="indexLvl"></div>
+      <div class="gauges-row">
+        <div class="gauge">
+          <svg viewBox="0 0 190 190">
+            <defs>
+              <linearGradient id="gGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#ffc36b"/>
+                <stop offset="50%" stop-color="#ff5e62"/>
+                <stop offset="100%" stop-color="#9a5fd0"/>
+              </linearGradient>
+            </defs>
+            <circle class="track" cx="95" cy="95" r="75"></circle>
+            <circle class="arc" id="gaugeArc" cx="95" cy="95" r="75"></circle>
+          </svg>
+          <div class="center">
+            <div class="num" id="indexNum">--</div>
+            <div class="denom">晚霞指数 / 100</div>
+            <div class="lvl" id="indexLvl"></div>
+          </div>
+        </div>
+        <div class="gauge">
+          <svg viewBox="0 0 190 190">
+            <defs>
+              <linearGradient id="gGradSR" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#4aa8d8"/>
+                <stop offset="50%" stop-color="#ffb347"/>
+                <stop offset="100%" stop-color="#ff6b9d"/>
+              </linearGradient>
+            </defs>
+            <circle class="track" cx="95" cy="95" r="75"></circle>
+            <circle class="arc" id="gaugeArcSR" cx="95" cy="95" r="75" style="stroke:url(#gGradSR)"></circle>
+          </svg>
+          <div class="center">
+            <div class="num" id="indexNumSR">--</div>
+            <div class="denom">朝霞指数 / 100</div>
+            <div class="lvl" id="indexLvlSR"></div>
+          </div>
         </div>
       </div>
       <div class="hero-main">
@@ -605,8 +626,8 @@ const els = {
   citySel:$("citySel"), locBtn:$("locBtn"), loading:$("loading"),
   dateInput:$("dateInput"), todayBtn:$("todayBtn"),
   modelNote:$("modelNote"), cloudChart:$("cloudChart"), chartNote:$("chartNote"),
-  heroDate:$("heroDate"), indexNum:$("indexNum"), indexLvl:$("indexLvl"),
-  gaugeArc:$("gaugeArc"), verdict:$("verdict"), verdictDetail:$("verdictDetail"),
+  heroDate:$("heroDate"), indexNum:$("indexNum"), indexLvl:$("indexLvl"), indexNumSR:$("indexNumSR"), indexLvlSR:$("indexLvlSR"),
+  gaugeArc:$("gaugeArc"), gaugeArcSR:$("gaugeArcSR"), verdict:$("verdict"), verdictDetail:$("verdictDetail"),
   tSunset:$("tSunset"), tGolden:$("tGolden"), tBlue:$("tBlue"),
   tSunriseIdx:$("tSunriseIdx"), tSunriseTime:$("tSunriseTime"),
   tSunrise:$("tSunrise"), tGoldenSR:$("tGoldenSR"), tBlueSR:$("tBlueSR"),
@@ -1011,6 +1032,18 @@ function renderHero(){
   els.indexLvl.style.color = lv.c;
   els.indexLvl.style.background = lv.c+"1f";
   els.indexLvl.style.border = "1px solid "+lv.c+"55";
+
+  // 朝霞指数圆
+  const srIdx = d.srIndex || 0;
+  const srLv = levelOf(srIdx);
+  els.indexNumSR.textContent = srIdx;
+  els.indexLvlSR.textContent = srLv.t;
+  els.indexLvlSR.style.color = srLv.c;
+  els.indexLvlSR.style.background = srLv.c+"1f";
+  els.indexLvlSR.style.border = "1px solid "+srLv.c+"55";
+  const circSR = 2*Math.PI*75;
+  els.gaugeArcSR.style.strokeDasharray = circSR.toFixed(1);
+  els.gaugeArcSR.style.strokeDashoffset = (circSR*(1 - srIdx/100)).toFixed(1);
 
   const circ = 2*Math.PI*75;
   els.gaugeArc.style.strokeDasharray = circ.toFixed(1);
