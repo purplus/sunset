@@ -624,7 +624,10 @@ function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC){
   let penalty = (lowC!=null && lowC>55) ? -15 : 0;
   // 染色云门控：中云+高云是火烧云的"画布"，太少则没有东西可被照亮
   // （无云时低云"通畅"得100分是误导，必须整体压分）
-  const dyeCloud = (midC!=null?midC:0) + (highC!=null?highC:0);
+  // 注意：undefined 也算缺失（undefined==null 为 true），缺失一律按 0 处理并触发门控
+  const m = (midC==null||isNaN(midC)) ? 0 : midC;
+  const h = (highC==null||isNaN(highC)) ? 0 : highC;
+  const dyeCloud = m + h;
   let dyePenalty = 0;
   if(dyeCloud < 8) dyePenalty = -35;      // 几乎无云可染 → 强压分
   else if(dyeCloud < 20) dyePenalty = -15; // 云太少 → 中度扣分
@@ -1297,8 +1300,9 @@ function renderFactors(d){
     const vividFactors = (cloud, lowC, midC, highC, cloudBase) => {
       // 1. 云量适合度：只看染色云（中云+高云）——低云是遮挡不是染色主体
       //    100% 高云卷云＝满屏染红的理想条件，不应判为"云多挡光"
-      const hasLayers = midC!=null || highC!=null;
-      const dyeC = (midC!=null?midC:0) + (highC!=null?highC:0);
+      //    注意：undefined 也算缺失（==null 为 true），缺失按 0 处理
+      const hasLayers = !(midC==null && highC==null);
+      const dyeC = ((midC==null||isNaN(midC))?0:midC) + ((highC==null||isNaN(highC))?0:highC);
       let cloudFit;
       if(hasLayers){
         // 有分层数据：染色云=中+高，低云不计入（全低云=无染色云=低分）
@@ -1331,10 +1335,13 @@ function renderFactors(d){
         if(total>0) heightFit = Math.round((midW*75 + highW*95)/total);
       }
       // 3. 三层云占比适合度：染色云（中+高）占比越高越易出彩
-      const sum = (lowC!=null?lowC:0) + (midC!=null?midC:0) + (highC!=null?highC:0);
+      const l0 = (lowC==null||isNaN(lowC)) ? 0 : lowC;
+      const m0 = (midC==null||isNaN(midC)) ? 0 : midC;
+      const h0 = (highC==null||isNaN(highC)) ? 0 : highC;
+      const sum = l0 + m0 + h0;
       let layerFit = 50;
       if(sum>0){
-        const dyeShare = ((midC!=null?midC:0)+(highC!=null?highC:0))/sum;
+        const dyeShare = (m0+h0)/sum;
         layerFit = Math.round(100*(0.4 + 0.6*dyeShare));
       }
       // 几乎无染色云（中+高<10%）：没有东西可被照亮，云高/占比分一并压低
