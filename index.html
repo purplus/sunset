@@ -1628,16 +1628,18 @@ function initLoc(){
       try {
         let placeName = "我的位置";
         // 逆地理编码：OpenStreetMap Nominatim（能到街道级）
+        // 注意：浏览器禁止自定义 User-Agent 头，设置会直接抛错导致永远走降级，故不设置
         try {
-          const rg = await fetch("https://nominatim.openstreetmap.org/reverse?lat="+lat+"&lon="+lon+"&format=json&accept-language=zh&zoom=18", {
-            headers: {"User-Agent": "SunsetPredictor/1.0"}
-          });
+          const ac = new AbortController();
+          const t = setTimeout(()=>ac.abort(), 8000);
+          const rg = await fetch("https://nominatim.openstreetmap.org/reverse?lat="+lat+"&lon="+lon+"&format=jsonv2&addressdetails=1&accept-language=zh&zoom=18", {signal: ac.signal});
+          clearTimeout(t);
           if(rg.ok){
             const rgData = await rg.json();
             const a = rgData.address || {};
-            const road = a.road || a.pedestrian || a.footway || a.residential || "";
-            const suburb = a.suburb || a.district || a.borough || "";
-            const city = a.city || a.town || a.county || "";
+            const road = a.road || a.pedestrian || a.footway || a.residential || a.neighbourhood || "";
+            const suburb = a.suburb || a.district || a.borough || a.neighbourhood || "";
+            const city = a.city || a.town || a.county || a.state || "";
             if(road && suburb) placeName = road + " · " + suburb;
             else if(road && city) placeName = road + " · " + city;
             else if(road) placeName = road;
@@ -1646,19 +1648,26 @@ function initLoc(){
             else if(rgData.display_name) placeName = rgData.display_name.split(",").slice(0,2).join(" ");
           }
         } catch(e){
+          console.log("nominatim err:", e.name, e.message);
           // Nominatim 失败，降级用 BigDataCloud
           try {
-            const rg2 = await fetch("https://api.bigdatacloud.net/data/reverse-geocode-client?latitude="+lat+"&longitude="+lon+"&localityLanguage=zh");
+            const ac2 = new AbortController();
+            const t2 = setTimeout(()=>ac2.abort(), 8000);
+            const rg2 = await fetch("https://api.bigdatacloud.net/data/reverse-geocode-client?latitude="+lat+"&longitude="+lon+"&localityLanguage=zh", {signal: ac2.signal});
+            clearTimeout(t2);
             if(rg2.ok){
               const d2 = await rg2.json();
               placeName = d2.locality || d2.city || d2.principalSubdivision || "我的位置";
             }
-          } catch(e2){}
+          } catch(e2){ console.log("bigdata err:", e2.message); }
         }
         // 获取海拔
         let elev = null;
         try {
-          const el = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+lat+"&longitude="+lon+"&hourly=temperature_2m&forecast_days=1");
+          const ac3 = new AbortController();
+          const t3 = setTimeout(()=>ac3.abort(), 8000);
+          const el = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+lat+"&longitude="+lon+"&hourly=temperature_2m&forecast_days=1", {signal: ac3.signal});
+          clearTimeout(t3);
           const elData = await el.json();
           elev = elData.elevation || null;
         } catch(e){}
@@ -1675,12 +1684,29 @@ function initLoc(){
     const ipFallback = async () => {
       try {
         showToast("GPS 定位失败，正在用 IP 定位…");
-        const ip = await fetch("http://ip-api.com/json/?lang=zh-CN");
-        const ipData = await ip.json();
-        if(ipData.lat && ipData.lon){
-          showToast("IP 定位到："+(ipData.city||"")+"（精度较低）");
-          await doReverse(ipData.lat, ipData.lon);
-          return;
+        let ipData = null;
+        // GitHub Pages 为 HTTPS，必须用 https 的 IP 服务，否则被浏览器拦截
+        for(const u of ["https://ipwho.is/", "https://ipapi.co/json/", "https://ip-api.com/json/?lang=zh-CN"]){
+          try{
+            const ac = new AbortController();
+            const t = setTimeout(()=>ac.abort(), 6000);
+            const ip = await fetch(u, {signal: ac.signal});
+            clearTimeout(t);
+            if(ip.ok){
+              const d = await ip.json();
+              if(d && (d.latitude!=null || d.lat!=null)){ ipData = d; break; }
+            }
+          }catch(e){ console.log("ip src err:", u, e.message); }
+        }
+        if(ipData){
+          const lat = ipData.latitude!=null ? ipData.latitude : ipData.lat;
+          const lon = ipData.longitude!=null ? ipData.longitude : ipData.lon;
+          const cityName = ipData.city || "";
+          if(lat!=null && lon!=null){
+            showToast("IP 定位到："+(cityName||"")+"（精度较低）");
+            await doReverse(lat, lon);
+            return;
+          }
         }
       } catch(e){ console.log("ip err:", e); }
       finish();
@@ -1689,7 +1715,7 @@ function initLoc(){
     navigator.geolocation.getCurrentPosition(
       pos=>{ doReverse(pos.coords.latitude, pos.coords.longitude).catch(ipFallback); },
       err=>{ console.log("geo err:", err.message); ipFallback(); },
-      {timeout:30000, maximumAge:0, enableHighAccuracy:true}
+      {timeout:20000, maximumAge:0, enableHighAccuracy:true}
     );
   });
 }
