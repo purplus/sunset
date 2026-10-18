@@ -382,7 +382,7 @@
   </div>
 
   <div class="section">
-    <div class="section-h"><h2>全国火烧云程度</h2><span class="tag">省会城市 · 直辖市 · 卫星底图可切换地形</span></div>
+    <div class="section-h"><h2>全国火烧云程度</h2><span class="tag" id="regionalNote">省会城市 · 直辖市 · 卫星底图</span></div>
     <div id="regionalMap" style="width:100%;height:450px;border-radius:12px;background:#1a2240"></div>
     <div class="legend-bar">
       <span style="background:#f0e8f0">不烧 &lt;10</span>
@@ -674,7 +674,7 @@ const els = {
   toast:$("toast"),
   sourceSeg:$("sourceSeg"), keyBtn:$("keyBtn"), keyDot:$("keyDot"),
   keyPanel:$("keyPanel"), keyInput:$("keyInput"), keySave:$("keySave"),
-  windyMap:$("windyMap"), windyMapNote:$("windyMapNote"),
+  windyMap:$("windyMap"), windyMapNote:$("windyMapNote"), regionalNote:$("regionalNote"),
   compassSvg:$("compassSvg"), azimuthInfo:$("azimuthInfo")
 };
 
@@ -1940,64 +1940,84 @@ function getVividColor(v){
 
 async function renderRegionalMap(){
   if(typeof L === "undefined") return;
-  if(!regionalMap){
-    regionalMap = L.map("regionalMap", {zoomControl: true}).setView([35, 106], 4);
-    // 底图组：卫星影像（默认，style=7 带道路标注）+ 地形图（style=8 可切换）
-    const satLayer = L.tileLayer("https://webst0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}", {
-      subdomains: ["1","2","3","4"], attribution: "© 高德卫星", maxZoom: 18
-    });
-    const terrainLayer = L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {
-      subdomains: ["1","2","3","4"], attribution: "© 高德地图", maxZoom: 10
-    });
-    satLayer.addTo(regionalMap);
-    L.control.layers({"🛰 卫星影像": satLayer, "🗺 地形图": terrainLayer}, null, {position: "topleft", collapsed: false}).addTo(regionalMap);
-  }
-  // 清除旧圆圈
-  regionalMap.eachLayer(l=>{ if(l instanceof L.CircleMarker || (l instanceof L.Tooltip)) regionalMap.removeLayer(l); });
-  // 并行获取各城市鲜艳度（限并发，避免触发限流）
-  const now = new Date();
-  const todayStr = now.getFullYear()+"-"+(now.getMonth()+1).toString().padStart(2,"0")+"-"+now.getDate().toString().padStart(2,"0");
-  const results = new Array(REGIONAL_CITIES.length);
-  const workers = Array.from({length:6}, (_,wi)=> (async ()=>{
-    for(let i=wi; i<REGIONAL_CITIES.length; i+=6){
-      const city = REGIONAL_CITIES[i];
-      try{
-        const url = "https://api.open-meteo.com/v1/forecast?latitude="+city.lat+"&longitude="+city.lon
-          + "&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=auto";
-        const res = await fetch(url);
-        if(!res.ok) continue;
-        const w = await res.json();
-        const h = w.hourly;
-        const idx = h.time.findIndex(t=>t.includes("T18:00"));
-        if(idx < 0) continue;
-        const lowC = h.cloud_cover_low[idx] || 0;
-        const midC = h.cloud_cover_mid[idx] || 0;
-        const highC = h.cloud_cover_high[idx] || 0;
-        const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
-        results[i] = {city, vivid};
-      }catch(e){}
+  if(els.regionalNote) els.regionalNote.textContent = "正在加载全国数据…";
+  try{
+    if(!regionalMap){
+      const el = document.getElementById("regionalMap");
+      if(!el || el.clientHeight===0) return;
+      regionalMap = L.map("regionalMap", {zoomControl: true}).setView([35, 106], 4);
+      // 底图组：Esri 全球卫星影像（稳定，无需 key）+ OSM 街道地形；高德作为备选
+      const satLayer = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+        attribution: "© Esri, Maxar, Earthstar Geographics", maxZoom: 18
+      });
+      const terrainLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        subdomains: "abc", attribution: "© OpenStreetMap", maxZoom: 18
+      });
+      const gaodeLayer = L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {
+        subdomains: ["1","2","3","4"], attribution: "© 高德地图", maxZoom: 18
+      });
+      satLayer.addTo(regionalMap);
+      L.control.layers({"🛰 卫星影像": satLayer, "🗺 街道地形": terrainLayer, "🗺 高德地形": gaodeLayer}, {}, {position: "topleft", collapsed: true}).addTo(regionalMap);
     }
-  }));
-  await Promise.all(workers);
-  // 画圆圈
-  results.forEach(r=>{
-    if(!r) return;
-    const {city, vivid} = r;
-    const color = getVividColor(vivid);
-    const circle = L.circleMarker([city.lat, city.lon], {
-      radius: 12,
-      fillColor: color,
-      color: "#fff",
-      weight: 2,
-      opacity: 0.9,
-      fillOpacity: 0.85
-    }).addTo(regionalMap);
-    circle.bindTooltip(city.name + " " + vivid + "%", {
-      permanent: true,
-      direction: "center",
-      className: "sun-dir-tooltip"
+    // 清除旧圆圈（保留底图与控制层）
+    const toRemove = [];
+    regionalMap.eachLayer(l=>{
+      if(l instanceof L.CircleMarker || l instanceof L.Tooltip || l instanceof L.Marker) toRemove.push(l);
     });
-  });
+    toRemove.forEach(l=>regionalMap.removeLayer(l));
+    // 并行获取各城市鲜艳度（限并发，避免触发限流）
+    const results = new Array(REGIONAL_CITIES.length);
+    const workers = Array.from({length:6}, (_,wi)=> (async ()=>{
+      for(let i=wi; i<REGIONAL_CITIES.length; i+=6){
+        const city = REGIONAL_CITIES[i];
+        try{
+          const url = "https://api.open-meteo.com/v1/forecast?latitude="+city.lat+"&longitude="+city.lon
+            + "&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=auto";
+          const ac = new AbortController();
+          const t = setTimeout(()=>ac.abort(), 10000);
+          const res = await fetch(url, {signal: ac.signal});
+          clearTimeout(t);
+          if(!res.ok) continue;
+          const w = await res.json();
+          const h = w.hourly;
+          if(!h || !h.time) continue;
+          const idx = h.time.findIndex(x=>x.includes("T18:00"));
+          if(idx < 0) continue;
+          const lowC = h.cloud_cover_low && h.cloud_cover_low[idx]!=null ? h.cloud_cover_low[idx] : 0;
+          const midC = h.cloud_cover_mid && h.cloud_cover_mid[idx]!=null ? h.cloud_cover_mid[idx] : 0;
+          const highC = h.cloud_cover_high && h.cloud_cover_high[idx]!=null ? h.cloud_cover_high[idx] : 0;
+          const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
+          results[i] = {city, vivid};
+        }catch(e){}
+      }
+    }));
+    await Promise.all(workers);
+    // 画圆圈
+    let okCount = 0;
+    results.forEach(r=>{
+      if(!r) return;
+      okCount++;
+      const {city, vivid} = r;
+      const color = getVividColor(vivid);
+      const circle = L.circleMarker([city.lat, city.lon], {
+        radius: 12,
+        fillColor: color,
+        color: "#fff",
+        weight: 2,
+        opacity: 0.9,
+        fillOpacity: 0.85
+      }).addTo(regionalMap);
+      circle.bindTooltip(city.name + " " + vivid + "%", {
+        permanent: true,
+        direction: "center",
+        className: "sun-dir-tooltip"
+      });
+    });
+    if(els.regionalNote) els.regionalNote.textContent = "已加载 " + okCount + "/" + REGIONAL_CITIES.length + " 城 · 取各城日落 18:00 云况";
+  }catch(e){
+    console.error("regional map err:", e);
+    if(els.regionalNote) els.regionalNote.textContent = "分布图加载失败，请刷新重试";
+  }
 }
 
 /* ================= 气象模型切换 ================= */
