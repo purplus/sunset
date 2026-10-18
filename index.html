@@ -2001,44 +2001,70 @@ async function renderPredictionMap(){
       clearTimeout(t);
       if(r.ok) geo = await r.json();
     }catch(e){}
-    // 2) 全国 3° 网格实时分层云量 → 鲜艳度（8 路并发）
+    // 2) 并行获取：全国 4° 网格实时云量（160 点，8 路并发，失败自动重试一次）+ 32 城指数（保底）
     const LATS=[], LONS=[];
-    for(let la=18; la<=54; la+=3) LATS.push(la);
-    for(let lo=73; lo<=135; lo+=3) LONS.push(lo);
+    for(let la=18; la<=54; la+=4) LATS.push(la);
+    for(let lo=73; lo<=133; lo+=4) LONS.push(lo);
     const grid = {};
+    const cityIdx = {};   // 城市保底指数
     let done=0, total=LATS.length*LONS.length;
+    const fetchVivid = async (la, lo)=>{
+      const ac = new AbortController();
+      const t = setTimeout(()=>ac.abort(), 12000);
+      try{
+        const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+la+"&longitude="+lo
+          + "&current=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=1&timezone=auto", {signal: ac.signal});
+        clearTimeout(t);
+        if(!res.ok) return null;
+        const w = await res.json();
+        const c = w.current || {};
+        const lowC = c.cloud_cover_low!=null?c.cloud_cover_low:0;
+        const midC = c.cloud_cover_mid!=null?c.cloud_cover_mid:0;
+        const highC = c.cloud_cover_high!=null?c.cloud_cover_high:0;
+        return Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
+      }catch(e){ clearTimeout(t); return null; }
+    };
+    // 网格 + 城市并行（同一池子）
+    const allTasks = [];
+    LATS.forEach((la, ai)=>{
+      LONS.forEach((lo, ji)=>{
+        allTasks.push({la, lo, key: la+","+lo});
+      });
+    });
+    REGIONAL_CITIES.forEach(c=>{
+      allTasks.push({la:c.lat, lo:c.lon, key:"c_"+c.name, city:c});
+    });
     const workers = Array.from({length:8}, (_,wi)=> (async ()=>{
-      for(let i=wi; i<total; i+=8){
-        const la = LATS[Math.floor(i/LONS.length)], lo = LONS[i%LONS.length];
-        try{
-          const ac = new AbortController();
-          const t = setTimeout(()=>ac.abort(), 12000);
-          const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+la+"&longitude="+lo
-            + "&current=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=1&timezone=auto", {signal: ac.signal});
-          clearTimeout(t);
-          if(res.ok){
-            const w = await res.json();
-            const c = w.current || {};
-            const lowC = c.cloud_cover_low!=null?c.cloud_cover_low:0;
-            const midC = c.cloud_cover_mid!=null?c.cloud_cover_mid:0;
-            const highC = c.cloud_cover_high!=null?c.cloud_cover_high:0;
-            // 与城市指数一致：染色云(中+高)主导，低云削弱
-            const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
-            grid[la+","+lo] = vivid;
-          }
-        }catch(e){}
+      for(let i=wi; i<allTasks.length; i+=8){
+        const tk = allTasks[i];
+        let v = await fetchVivid(tk.la, tk.lo);
+        if(v==null) v = await fetchVivid(tk.la, tk.lo); // 重试一次
+        if(v!=null){
+          if(tk.city) cityIdx[tk.city.name] = v;
+          else grid[tk.key] = v;
+        }
         done++;
-        if(tag && done%16===0) tag.textContent = "生成中… " + Math.round(done/total*100) + "%";
+        if(tag && done%16===0) tag.textContent = "生成中… " + Math.round(done/allTasks.length*100) + "%";
       }
     }));
     await Promise.all(workers);
-    if(Object.keys(grid).length < 30){
-      if(tag) tag.textContent = "云况数据不足，请刷新重试";
+    const gridN = Object.keys(grid).length, cityN = Object.keys(cityIdx).length;
+    if(gridN < 20 && cityN < 5){
+      if(tag) tag.textContent = "云况数据不足，请稍后重试";
       if(els.regionalNote) els.regionalNote.textContent = "数据获取失败，请刷新重试";
       return;
     }
-    // 3) 绘制预测图
-    drawPredictionCanvas(cv, grid, LATS, LONS, geo);
+    // 网格不足时用城市指数填充相邻格点，保证热力图尽量完整
+    if(gridN < 40 && cityN > 5){
+      Object.keys(cityIdx).forEach(nm=>{
+        const c = REGIONAL_CITIES.find(x=>x.name===nm);
+        if(!c) return;
+        const key = Math.round(c.lat/4)*4 + "," + Math.round(c.lon/4)*4;
+        if(!grid[key]) grid[key] = cityIdx[nm];
+      });
+    }
+    // 3) 绘制预测图（城市保底指数优先用于标注，网格用于热力）
+    drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx);
     if(tag) tag.textContent = "全国火烧云程度预测图 · 实时云况";
     if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 实时云况";
   }catch(e){
@@ -2048,8 +2074,8 @@ async function renderPredictionMap(){
 }
 
 /* ---- 用 canvas 绘制中国区域火烧云鲜艳度热力图 ---- */
-function drawPredictionCanvas(cv, grid, LATS, LONS, geo){
-  // 尺寸：中国范围 lat 18~54, lon 73~135
+function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
+  // 尺寸：中国范围 lat 3~54, lon 73~135（含南海诸岛）
   const BOUNDS = {la0:3, la1:54, lo0:73, lo1:135};
   const W = 900, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
   const dpr = window.devicePixelRatio||1;
@@ -2166,11 +2192,10 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo){
     ctx.lineWidth = 1.5;
     ctx.strokeRect(0, 0, W, H);
   }
-  // 城市圆点 + 指数
+  // 城市圆点 + 指数（优先用真实获取的城市指数，其次网格插值）
   REGIONAL_CITIES.forEach(c=>{
     const x = px(c.lon), y = py(c.lat);
-    // 获取该城真实指数（网格插值）
-    const v = interp(c.lat, c.lon);
+    let v = cityIdx && cityIdx[c.name]!=null ? cityIdx[c.name] : interp(c.lat, c.lon);
     if(v==null) return;
     ctx.beginPath();
     ctx.arc(x, y, 7, 0, Math.PI*2);
