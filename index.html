@@ -396,6 +396,7 @@
 
   <div class="section">
     <div class="section-h"><h2>详细预测</h2><span class="tag">参考 sunsetbot 格式</span></div>
+    <div id="crystalBanner" style="display:none;background:linear-gradient(135deg,rgba(64,196,255,.12),rgba(140,120,255,.16));border:1px solid rgba(100,200,255,.35);border-radius:14px;padding:14px 16px;margin-bottom:14px;font-size:13px;line-height:1.7"></div>
     <div class="grid-factors" id="detailForecast"></div>
   </div>
 
@@ -652,7 +653,7 @@ const els = {
   tSunriseIdx:$("tSunriseIdx"), tSunriseTime:$("tSunriseTime"),
   tSunrise:$("tSunrise"), tGoldenSR:$("tGoldenSR"), tBlueSR:$("tBlueSR"),
   skyGrad:$("skyGrad"), sunMarker:$("sunMarker"), skyHud:$("skyHud"),
-  factors:$("factors"), detailForecast:$("detailForecast"), cloudDistanceBox:$("cloudDistanceBox"), week:$("week"),
+  factors:$("factors"), detailForecast:$("detailForecast"), crystalBanner:$("crystalBanner"), cloudDistanceBox:$("cloudDistanceBox"), week:$("week"),
   pmToggle:$("pmToggle"), pmSliders:$("pmSliders"),
   slCloud:$("slCloud"), slHum:$("slHum"), slVis:$("slVis"),
   outCloud:$("outCloud"), outHum:$("outHum"), outVis:$("outVis"),
@@ -1146,6 +1147,9 @@ function verdictDetail(d){
   if(d.vis<12) parts.push("能见度一般，通透度欠佳");
   if(d.wind>35) parts.push("风力偏大，云层可能被吹散");
   if(parts.length===0) parts.push("通透度高、云况配合，是出片的好天气");
+  // 超级水晶天检测：AOD 极低 + 能见度极高（空气几乎无污染）
+  const crystalClear = (d.aod!=null && !isNaN(d.aod) && d.aod<=0.08) && (d.vis!=null && d.vis>=40);
+  if(crystalClear) parts.push("💎 超级水晶天：空气近乎无污染，通透度顶级");
   return "今晚 " + parts.join("；") + "。";
 }
 
@@ -1255,6 +1259,25 @@ function renderFactors(d){
       <div class="bar"><i style="width:${it.s}%"></i></div>
       <div class="fnote">${it.note}</div>
     </div>`).join("");
+
+  // 超级水晶天横幅：AOD 极低 + 能见度极高（空气近乎无污染）
+  if(els.crystalBanner){
+    const isCrystal = (d.aod!=null && !isNaN(d.aod) && d.aod<=0.08) && (d.vis!=null && d.vis>=40);
+    if(isCrystal){
+      els.crystalBanner.style.display = "block";
+      els.crystalBanner.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:22px">💎</span>
+          <div>
+            <div style="font-weight:600;color:#7ce4ff">超级水晶天</div>
+            <div style="color:var(--ink-2);font-size:12px">空气中几乎无污染物（AOD ${d.aod.toFixed(2)}），能见度 ${Math.round(d.vis)} km。通透度顶级：晚霞色彩会偏清透、天空更纯净，但缺少霾粒子散射，红霞浓度可能略低于平常。适合拍通透蓝调、星光和远景。</div>
+          </div>
+        </div>
+      `;
+    } else {
+      els.crystalBanner.style.display = "none";
+    }
+  }
 
   // 详细预测：基于云量+云高+三层云占比推算鲜艳度
   const d0 = state.days[state.selDay];
