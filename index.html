@@ -440,6 +440,7 @@
         <svg id="compassSvg" width="96" height="96" viewBox="0 0 100 100"></svg>
       </div>
       <iframe id="windyMap" class="windy-map-frame" loading="lazy" title="Windy 云层地图"></iframe>
+      <div id="mapPickHint" style="background:var(--panel);border:1px dashed rgba(255,140,66,.5);border-radius:12px;padding:8px 12px;margin-top:8px;font-size:12px;color:var(--ink-2)">📍 在下方地图上点击任意位置，可精确选点定位（到街道级）</div>
       <div id="leafletMap" class="leaflet-frame"></div>
     </div>
   </div>
@@ -1544,6 +1545,67 @@ function showToast(msg){
   showToast._t = setTimeout(()=>els.toast.classList.remove("show"), 3800);
 }
 
+/* ---- 全局逆地理编码：坐标 → 街道级地名 ---- */
+async function reverseGeocode(lat, lon){
+  let placeName = "我的位置";
+  try {
+    // Nominatim（能到街道级）；浏览器禁止自定义 User-Agent 头，故不设置
+    const ac = new AbortController();
+    const t = setTimeout(()=>ac.abort(), 8000);
+    const rg = await fetch("https://nominatim.openstreetmap.org/reverse?lat="+lat+"&lon="+lon+"&format=jsonv2&addressdetails=1&accept-language=zh&zoom=18", {signal: ac.signal});
+    clearTimeout(t);
+    if(rg.ok){
+      const rgData = await rg.json();
+      const a = rgData.address || {};
+      const road = a.road || a.pedestrian || a.footway || a.residential || a.neighbourhood || "";
+      const suburb = a.suburb || a.district || a.borough || a.neighbourhood || "";
+      const city = a.city || a.town || a.county || a.state || "";
+      if(road && suburb) placeName = road + " · " + suburb;
+      else if(road && city) placeName = road + " · " + city;
+      else if(road) placeName = road;
+      else if(suburb && city) placeName = suburb + " · " + city;
+      else if(city) placeName = city;
+      else if(rgData.display_name) placeName = rgData.display_name.split(",").slice(0,2).join(" ");
+    }
+  } catch(e){
+    console.log("nominatim err:", e.name, e.message);
+    // 降级用 BigDataCloud
+    try {
+      const ac2 = new AbortController();
+      const t2 = setTimeout(()=>ac2.abort(), 8000);
+      const rg2 = await fetch("https://api.bigdatacloud.net/data/reverse-geocode-client?latitude="+lat+"&longitude="+lon+"&localityLanguage=zh", {signal: ac2.signal});
+      clearTimeout(t2);
+      if(rg2.ok){
+        const d2 = await rg2.json();
+        placeName = d2.locality || d2.city || d2.principalSubdivision || "我的位置";
+      }
+    } catch(e2){ console.log("bigdata err:", e2.message); }
+  }
+  return placeName;
+}
+/* ---- 获取实时海拔 ---- */
+async function fetchElevation(lat, lon){
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(()=>ac.abort(), 8000);
+    const el = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+lat+"&longitude="+lon+"&hourly=temperature_2m&forecast_days=1", {signal: ac.signal});
+    clearTimeout(t);
+    const elData = await el.json();
+    return elData.elevation || null;
+  } catch(e){ return null; }
+}
+/* ---- 按坐标定位：逆地理 + 海拔 + 加载 ---- */
+async function locateByCoords(lat, lon, tag){
+  const placeName = await reverseGeocode(lat, lon);
+  const elev = await fetchElevation(lat, lon);
+  const tz = -(new Date().getTimezoneOffset())*60;
+  const city = {n:placeName, lat, lon, tz:tz||28800, elev};
+  state.elevation = elev;
+  await loadCity(city);
+  showToast((tag||"已定位")+"："+placeName+(elev?(" · 海拔"+Math.round(elev)+"m"):""));
+  return placeName;
+}
+
 async function loadCity(city){
   state.city = city;
   state.selDay = 0;
@@ -1626,56 +1688,7 @@ function initLoc(){
     const finish = () => { els.locBtn.disabled=false; els.locBtn.textContent="使用我的位置"; };
     const doReverse = async (lat, lon) => {
       try {
-        let placeName = "我的位置";
-        // 逆地理编码：OpenStreetMap Nominatim（能到街道级）
-        // 注意：浏览器禁止自定义 User-Agent 头，设置会直接抛错导致永远走降级，故不设置
-        try {
-          const ac = new AbortController();
-          const t = setTimeout(()=>ac.abort(), 8000);
-          const rg = await fetch("https://nominatim.openstreetmap.org/reverse?lat="+lat+"&lon="+lon+"&format=jsonv2&addressdetails=1&accept-language=zh&zoom=18", {signal: ac.signal});
-          clearTimeout(t);
-          if(rg.ok){
-            const rgData = await rg.json();
-            const a = rgData.address || {};
-            const road = a.road || a.pedestrian || a.footway || a.residential || a.neighbourhood || "";
-            const suburb = a.suburb || a.district || a.borough || a.neighbourhood || "";
-            const city = a.city || a.town || a.county || a.state || "";
-            if(road && suburb) placeName = road + " · " + suburb;
-            else if(road && city) placeName = road + " · " + city;
-            else if(road) placeName = road;
-            else if(suburb && city) placeName = suburb + " · " + city;
-            else if(city) placeName = city;
-            else if(rgData.display_name) placeName = rgData.display_name.split(",").slice(0,2).join(" ");
-          }
-        } catch(e){
-          console.log("nominatim err:", e.name, e.message);
-          // Nominatim 失败，降级用 BigDataCloud
-          try {
-            const ac2 = new AbortController();
-            const t2 = setTimeout(()=>ac2.abort(), 8000);
-            const rg2 = await fetch("https://api.bigdatacloud.net/data/reverse-geocode-client?latitude="+lat+"&longitude="+lon+"&localityLanguage=zh", {signal: ac2.signal});
-            clearTimeout(t2);
-            if(rg2.ok){
-              const d2 = await rg2.json();
-              placeName = d2.locality || d2.city || d2.principalSubdivision || "我的位置";
-            }
-          } catch(e2){ console.log("bigdata err:", e2.message); }
-        }
-        // 获取海拔
-        let elev = null;
-        try {
-          const ac3 = new AbortController();
-          const t3 = setTimeout(()=>ac3.abort(), 8000);
-          const el = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+lat+"&longitude="+lon+"&hourly=temperature_2m&forecast_days=1", {signal: ac3.signal});
-          clearTimeout(t3);
-          const elData = await el.json();
-          elev = elData.elevation || null;
-        } catch(e){}
-        const tz = -(new Date().getTimezoneOffset())*60;
-        const city = {n:placeName, lat, lon, tz:tz||28800, elev};
-        state.elevation = elev;
-        await loadCity(city);
-        showToast("已定位："+placeName+(elev?(" · 海拔"+Math.round(elev)+"m"):""));
+        await locateByCoords(lat, lon);
       } finally {
         finish();
       }
@@ -1799,8 +1812,8 @@ function updateWindyMap(){
   els.windyMapNote.textContent = "云层图层 · "+(WINDY_MAP_PRODUCT[state.model]==="gfs"?"GFS":"ECMWF")+" · "+city.n+"（"+city.lat.toFixed(2)+", "+city.lon.toFixed(2)+"）";
 }
 
-/* ---- Leaflet 交互式地图（标注日出/日落方向） ---- */
-let leafletMap = null, leafletLayers = [];
+/* ---- Leaflet 交互式地图（标注日出/日落方向 + 点击选点） ---- */
+let leafletMap = null, leafletLayers = [], pickingMarker = null;
 function updateLeafletMap(){
   if(typeof L === "undefined") return;
   const city = state.city;
@@ -1813,6 +1826,24 @@ function updateLeafletMap(){
     leafletMap.on("zoomend", ()=>{
       const z = leafletMap.getZoom();
       syncWindyZoom(z);
+    });
+    // 点击地图任意位置 → 精确选点定位（到街道级）
+    leafletMap.on("click", async (ev)=>{
+      const {lat: clat, lng: clon} = ev.latlng;
+      if(pickingMarker){ leafletMap.removeLayer(pickingMarker); }
+      pickingMarker = L.circleMarker([clat, clon], {radius:9, color:"#4af0ff", fillColor:"#4af0ff", fillOpacity:.9, weight:2}).addTo(leafletMap);
+      // 逆地理到街道级
+      let place = "";
+      try { place = await reverseGeocode(clat, clon); } catch(e){ place = "选点位置"; }
+      pickingMarker.bindTooltip("选点定位中… "+clat.toFixed(5)+", "+clon.toFixed(5), {permanent:true, direction:"top", className:"sun-dir-tooltip"});
+      pickingMarker.unbindTooltip();
+      const ok = window.confirm("选点定位到：\n"+place+"\n\n"+clat.toFixed(5)+", "+clon.toFixed(5)+"\n\n确定使用此位置吗？");
+      if(ok){
+        await locateByCoords(clat, clon, "已选点定位");
+      } else {
+        leafletMap.removeLayer(pickingMarker);
+        pickingMarker = null;
+      }
     });
   } else {
     leafletMap.setView([lat, lon], 12);
