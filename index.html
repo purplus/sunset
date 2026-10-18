@@ -611,7 +611,13 @@ function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC){
   let base = sMid*0.40 + sHigh*0.30 + sLow*0.20 + scoreAOD(aod)*0.10;
   // 低云遮挡惩罚：低云>55% 扣 15 分
   let penalty = (lowC!=null && lowC>55) ? -15 : 0;
-  return Math.round(base + penalty);
+  // 染色云门控：中云+高云是火烧云的"画布"，太少则没有东西可被照亮
+  // （无云时低云"通畅"得100分是误导，必须整体压分）
+  const dyeCloud = (midC!=null?midC:0) + (highC!=null?highC:0);
+  let dyePenalty = 0;
+  if(dyeCloud < 8) dyePenalty = -35;      // 几乎无云可染 → 强压分
+  else if(dyeCloud < 20) dyePenalty = -15; // 云太少 → 中度扣分
+  return Math.round(base + penalty + dyePenalty);
 }
 function level(index){
   if(index<35) return {t:"一般", c:"var(--bad)"};
