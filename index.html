@@ -382,7 +382,7 @@
   </div>
 
   <div class="section">
-    <div class="section-h"><h2>今日鲜艳度分布</h2><span class="tag">中国主要城市 · 朝霞/晚霞</span></div>
+    <div class="section-h"><h2>全国火烧云程度</h2><span class="tag">省会城市 · 直辖市 · 卫星底图可切换地形</span></div>
     <div id="regionalMap" style="width:100%;height:450px;border-radius:12px;background:#1a2240"></div>
     <div class="legend-bar">
       <span style="background:#f0e8f0">不烧 &lt;10</span>
@@ -501,7 +501,17 @@ const CITIES = [
   {n:"福州",lat:26.0745,lon:119.2965,tz:28800},
   {n:"厦门",lat:24.4798,lon:118.0894,tz:28800},
   {n:"兰州",lat:36.0611,lon:103.8343,tz:28800},
-  {n:"呼和浩特",lat:40.8424,lon:111.7490,tz:28800}
+  {n:"呼和浩特",lat:40.8424,lon:111.7490,tz:28800},
+  {n:"石家庄",lat:38.0428,lon:114.5149,tz:28800},
+  {n:"长春",lat:43.8171,lon:125.3235,tz:28800},
+  {n:"合肥",lat:31.8206,lon:117.2272,tz:28800},
+  {n:"南昌",lat:28.6820,lon:115.8579,tz:28800},
+  {n:"济南",lat:36.6512,lon:117.1201,tz:28800},
+  {n:"南宁",lat:22.8170,lon:108.3665,tz:28800},
+  {n:"海口",lat:20.0440,lon:110.1999,tz:28800},
+  {n:"贵阳",lat:26.6470,lon:106.6302,tz:28800},
+  {n:"西宁",lat:36.6171,lon:101.7782,tz:28800},
+  {n:"银川",lat:38.4872,lon:106.2309,tz:28800}
 ];
 
 /* ================= 天文：日落时刻（NOAA 简化算法） ================= */
@@ -1797,29 +1807,50 @@ function updateLeafletMap(){
 }
 
 /* ================= 全国分布图 ================= */
+// 全国所有省会城市 + 直辖市（含偏远地区）
 const REGIONAL_CITIES = [
+  // 直辖市
   {name:"北京", lat:39.9042, lon:116.4074},
   {name:"上海", lat:31.2304, lon:121.4737},
+  {name:"天津", lat:39.3434, lon:117.3616},
+  {name:"重庆", lat:29.5630, lon:106.5516},
+  // 华北
+  {name:"石家庄", lat:38.0428, lon:114.5149},
+  {name:"太原", lat:37.8706, lon:112.5489},
+  {name:"呼和浩特", lat:40.8424, lon:111.7492},
+  // 东北
+  {name:"沈阳", lat:41.8057, lon:123.4315},
+  {name:"长春", lat:43.8171, lon:125.3235},
+  {name:"哈尔滨", lat:45.8038, lon:126.5349},
+  // 华东
+  {name:"南京", lat:32.0603, lon:118.7969},
+  {name:"杭州", lat:30.2741, lon:120.1551},
+  {name:"合肥", lat:31.8206, lon:117.2272},
+  {name:"福州", lat:26.0745, lon:119.2965},
+  {name:"南昌", lat:28.6820, lon:115.8579},
+  {name:"济南", lat:36.6512, lon:117.1201},
+  // 华中/华南
+  {name:"郑州", lat:34.7466, lon:113.6254},
+  {name:"武汉", lat:30.5928, lon:114.3055},
+  {name:"长沙", lat:28.2282, lon:112.9388},
   {name:"广州", lat:23.1291, lon:113.2644},
   {name:"深圳", lat:22.5431, lon:114.0579},
+  {name:"南宁", lat:22.8170, lon:108.3665},
+  {name:"海口", lat:20.0440, lon:110.1999},
+  // 西南
   {name:"成都", lat:30.5728, lon:104.0668},
-  {name:"重庆", lat:29.5630, lon:106.5516},
-  {name:"西安", lat:34.3416, lon:108.9398},
-  {name:"武汉", lat:30.5928, lon:114.3055},
-  {name:"杭州", lat:30.2741, lon:120.1551},
-  {name:"南京", lat:32.0603, lon:118.7969},
-  {name:"青岛", lat:36.0671, lon:120.3826},
-  {name:"厦门", lat:24.4798, lon:118.0894},
-  {name:"长沙", lat:28.2282, lon:112.9388},
+  {name:"贵阳", lat:26.6470, lon:106.6302},
   {name:"昆明", lat:25.0389, lon:102.7183},
-  {name:"哈尔滨", lat:45.8038, lon:126.5349},
-  {name:"沈阳", lat:41.8057, lon:123.4315},
-  {name:"乌鲁木齐", lat:43.8256, lon:87.6168},
   {name:"拉萨", lat:29.6520, lon:91.1721},
-  {name:"太原", lat:37.8706, lon:112.5489},
-  {name:"郑州", lat:34.7466, lon:113.6254}
+  // 西北
+  {name:"西安", lat:34.3416, lon:108.9398},
+  {name:"兰州", lat:36.0611, lon:103.8343},
+  {name:"西宁", lat:36.6171, lon:101.7782},
+  {name:"银川", lat:38.4872, lon:106.2309},
+  {name:"乌鲁木齐", lat:43.8256, lon:87.6168}
 ];
 let regionalMap = null;
+let regionalBaseLayer = null;
 
 function getVividColor(v){
   if(v >= 88) return "#6b2040";
@@ -1833,46 +1864,63 @@ function getVividColor(v){
 async function renderRegionalMap(){
   if(typeof L === "undefined") return;
   if(!regionalMap){
-    regionalMap = L.map("regionalMap", {zoomControl: true}).setView([35, 108], 4);
-    // 高德地形地图（显示地形道路）
-    L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {
+    regionalMap = L.map("regionalMap", {zoomControl: true}).setView([35, 106], 4);
+    // 底图组：卫星影像（默认，style=7 带道路标注）+ 地形图（style=8 可切换）
+    const satLayer = L.tileLayer("https://webst0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}", {
+      subdomains: ["1","2","3","4"], attribution: "© 高德卫星", maxZoom: 18
+    });
+    const terrainLayer = L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {
       subdomains: ["1","2","3","4"], attribution: "© 高德地图", maxZoom: 10
-    }).addTo(regionalMap);
+    });
+    satLayer.addTo(regionalMap);
+    L.control.layers({"🛰 卫星影像": satLayer, "🗺 地形图": terrainLayer}, null, {position: "topleft", collapsed: false}).addTo(regionalMap);
   }
   // 清除旧圆圈
   regionalMap.eachLayer(l=>{ if(l instanceof L.CircleMarker || (l instanceof L.Tooltip)) regionalMap.removeLayer(l); });
-  // 批量获取各城市鲜艳度
-  for(const city of REGIONAL_CITIES){
-    try{
-      const url = "https://api.open-meteo.com/v1/forecast?latitude="+city.lat+"&longitude="+city.lon
-        + "&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=auto";
-      const res = await fetch(url);
-      if(!res.ok) continue;
-      const w = await res.json();
-      const h = w.hourly;
-      const idx = h.time.findIndex(t=>t.includes("T18:00"));
-      if(idx < 0) continue;
-      const lowC = h.cloud_cover_low[idx] || 0;
-      const midC = h.cloud_cover_mid[idx] || 0;
-      const highC = h.cloud_cover_high[idx] || 0;
-      const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
-      // 画圆圈
-      const color = getVividColor(vivid);
-      const circle = L.circleMarker([city.lat, city.lon], {
-        radius: 12,
-        fillColor: color,
-        color: "#fff",
-        weight: 2,
-        opacity: 0.9,
-        fillOpacity: 0.85
-      }).addTo(regionalMap);
-      circle.bindTooltip(city.name + " " + vivid + "%", {
-        permanent: true,
-        direction: "center",
-        className: "sun-dir-tooltip"
-      });
-    }catch(e){}
-  }
+  // 并行获取各城市鲜艳度（限并发，避免触发限流）
+  const now = new Date();
+  const todayStr = now.getFullYear()+"-"+(now.getMonth()+1).toString().padStart(2,"0")+"-"+now.getDate().toString().padStart(2,"0");
+  const results = new Array(REGIONAL_CITIES.length);
+  const workers = Array.from({length:6}, (_,wi)=> (async ()=>{
+    for(let i=wi; i<REGIONAL_CITIES.length; i+=6){
+      const city = REGIONAL_CITIES[i];
+      try{
+        const url = "https://api.open-meteo.com/v1/forecast?latitude="+city.lat+"&longitude="+city.lon
+          + "&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=auto";
+        const res = await fetch(url);
+        if(!res.ok) continue;
+        const w = await res.json();
+        const h = w.hourly;
+        const idx = h.time.findIndex(t=>t.includes("T18:00"));
+        if(idx < 0) continue;
+        const lowC = h.cloud_cover_low[idx] || 0;
+        const midC = h.cloud_cover_mid[idx] || 0;
+        const highC = h.cloud_cover_high[idx] || 0;
+        const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
+        results[i] = {city, vivid};
+      }catch(e){}
+    }
+  }));
+  await Promise.all(workers);
+  // 画圆圈
+  results.forEach(r=>{
+    if(!r) return;
+    const {city, vivid} = r;
+    const color = getVividColor(vivid);
+    const circle = L.circleMarker([city.lat, city.lon], {
+      radius: 12,
+      fillColor: color,
+      color: "#fff",
+      weight: 2,
+      opacity: 0.9,
+      fillOpacity: 0.85
+    }).addTo(regionalMap);
+    circle.bindTooltip(city.name + " " + vivid + "%", {
+      permanent: true,
+      direction: "center",
+      className: "sun-dir-tooltip"
+    });
+  });
 }
 
 /* ================= 气象模型切换 ================= */
