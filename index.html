@@ -383,9 +383,15 @@
 
   <div class="section">
     <div class="section-h"><h2>全国火烧云程度</h2><span class="tag" id="regionalNote">省会城市 · 直辖市 · 实时云况</span></div>
-    <div style="position:relative;width:100%;background:#151c36;border-radius:12px;overflow:hidden">
-      <canvas id="predCanvas" style="display:block;width:100%;height:auto"></canvas>
-      <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px" id="predCanvasTag">正在生成预测图…</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%">
+      <div style="position:relative;background:#151c36;border-radius:12px;overflow:hidden">
+        <canvas id="predCloudCanvas" style="display:block;width:100%;height:auto"></canvas>
+        <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px">实时云量</div>
+      </div>
+      <div style="position:relative;background:#151c36;border-radius:12px;overflow:hidden">
+        <canvas id="predCanvas" style="display:block;width:100%;height:auto"></canvas>
+        <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px" id="predCanvasTag">正在生成程度图…</div>
+      </div>
     </div>
     <div class="legend-bar">
       <span style="background:#f0e8f0">不烧 &lt;10</span>
@@ -2005,15 +2011,15 @@ async function renderPredictionMap(){
     const LATS=[], LONS=[];
     for(let la=18; la<=54; la+=4) LATS.push(la);
     for(let lo=73; lo<=133; lo+=4) LONS.push(lo);
-    const grid = {};
+    const grid = {};      // grid[key] = {vivid, cloud}
     const cityIdx = {};   // 城市保底指数
-    let done=0, total=LATS.length*LONS.length;
+    let done=0;
     const fetchVivid = async (la, lo)=>{
       const ac = new AbortController();
       const t = setTimeout(()=>ac.abort(), 12000);
       try{
         const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+la+"&longitude="+lo
-          + "&current=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=1&timezone=auto", {signal: ac.signal});
+          + "&current=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=1&timezone=auto", {signal: ac.signal});
         clearTimeout(t);
         if(!res.ok) return null;
         const w = await res.json();
@@ -2021,7 +2027,9 @@ async function renderPredictionMap(){
         const lowC = c.cloud_cover_low!=null?c.cloud_cover_low:0;
         const midC = c.cloud_cover_mid!=null?c.cloud_cover_mid:0;
         const highC = c.cloud_cover_high!=null?c.cloud_cover_high:0;
-        return Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
+        const cloud = c.cloud_cover!=null?c.cloud_cover: Math.max(lowC, midC, highC);
+        const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
+        return {vivid, cloud};
       }catch(e){ clearTimeout(t); return null; }
     };
     // 网格 + 城市并行（同一池子）
@@ -2063,14 +2071,92 @@ async function renderPredictionMap(){
         if(!grid[key]) grid[key] = cityIdx[nm];
       });
     }
-    // 3) 绘制预测图（城市保底指数优先用于标注，网格用于热力）
+    // 3) 绘制两张图：实时云量图（白=云）+ 程度图（热力+城市指数）
+    const cloudCv = document.getElementById("predCloudCanvas");
+    drawCloudCanvas(cloudCv, grid, LATS, LONS, geo);
     drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx);
-    if(tag) tag.textContent = "全国火烧云程度预测图 · 实时云况";
+    if(tag) tag.textContent = "程度图 · 实时云况";
     if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 实时云况";
   }catch(e){
     console.error("pred map err:", e);
     if(tag) tag.textContent = "生成失败，请刷新重试";
   }
+}
+
+/* ---- 实时云量图：白色=有云，透明=无云（canvas 插值渲染） ---- */
+function drawCloudCanvas(cv, grid, LATS, LONS, geo){
+  if(!cv) return;
+  const BOUNDS = {la0:3, la1:54, lo0:73, lo1:135};
+  const W = 900, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
+  const dpr = window.devicePixelRatio||1;
+  cv.width = W*dpr; cv.height = H*dpr;
+  cv.style.aspectRatio = W+"/"+H;
+  const ctx = cv.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = "#151c36";
+  ctx.fillRect(0, 0, W, H);
+  const px = lo => (lo - BOUNDS.lo0) / (BOUNDS.lo1 - BOUNDS.lo0) * W;
+  const py = la => (BOUNDS.la1 - la) / (BOUNDS.la1 - BOUNDS.la0) * H;
+  const interpCloud = (la, lo)=>{
+    let i1=0; while(i1<LATS.length-1 && LATS[i1+1]<=la) i1++;
+    let j1=0; while(j1<LONS.length-1 && LONS[j1+1]<=lo) j1++;
+    const la0=LATS[i1], la1=LATS[i1+1], lo0=LONS[j1], lo1=LONS[j1+1];
+    const a=grid[la0+","+lo0], b=grid[la1+","+lo0], c=grid[la0+","+lo1], d=grid[la1+","+lo1];
+    if((a==null)&&(b==null)&&(c==null)&&(d==null)) return null;
+    const f=(la-la0)/(la1-la0||1), g=(lo-lo0)/(lo1-lo0||1);
+    const top=(a?a.cloud:50)*(1-g)+(c?c.cloud:50)*g;
+    const bot=(b?b.cloud:50)*(1-g)+(d?d.cloud:50)*g;
+    return top*(1-f)+bot*f;
+  };
+  // 白=云量 100% 透明=0%
+  const STEP = 6;
+  for(let yy=0; yy<H; yy+=STEP){
+    const la = BOUNDS.la1 - (yy+STEP/2)/H*(BOUNDS.la1-BOUNDS.la0);
+    for(let xx=0; xx<W; xx+=STEP){
+      const lo = BOUNDS.lo0 + (xx+STEP/2)/W*(BOUNDS.lo1-BOUNDS.lo0);
+      const cc = interpCloud(la, lo);
+      if(cc==null) continue;
+      const a = Math.max(0, Math.min(1, cc/100)) * 0.8;
+      ctx.fillStyle = "rgba(235,238,245," + a.toFixed(3) + ")";
+      ctx.fillRect(xx, yy, STEP, STEP);
+    }
+  }
+  // 省界轮廓
+  if(geo){
+    const drawLines = c2=>{
+      c2.beginPath();
+      (geo.features||[]).forEach(f=>{
+        const g = f.geometry;
+        if(!g) return;
+        const polys = g.type==="Polygon" ? [g.coordinates] : (g.type==="MultiPolygon" ? g.coordinates : []);
+        polys.forEach(poly=>{
+          poly.forEach(ring=>{
+            ring.forEach((pt, k)=>{
+              const x = px(pt[0]), y = py(pt[1]);
+              if(k===0) c2.moveTo(x, y); else c2.lineTo(x, y);
+            });
+            c2.closePath();
+          });
+        });
+      });
+    };
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 0.8;
+    drawLines(ctx);
+    ctx.stroke();
+  }
+  // 城市点（白描边小圆）
+  REGIONAL_CITIES.forEach(c=>{
+    const x = px(c.lon), y = py(c.lat);
+    ctx.beginPath();
+    ctx.arc(x, y, 4.5, 0, Math.PI*2);
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fill();
+  });
+  ctx.fillStyle = "rgba(255,255,255,0.45)";
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.textAlign = "right";
+  ctx.fillText("南海诸岛", W-8, H-6);
 }
 
 /* ---- 用 canvas 绘制中国区域火烧云鲜艳度热力图 ---- */
@@ -2088,7 +2174,7 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
   ctx.fillRect(0, 0, W, H);
   const px = lo => (lo - BOUNDS.lo0) / (BOUNDS.lo1 - BOUNDS.lo0) * W;
   const py = la => (BOUNDS.la1 - la) / (BOUNDS.la1 - BOUNDS.la0) * H;
-  // 云量网格 → 双线性插值
+  // 云量网格 → 双线性插值（grid 值为 {vivid, cloud}，取 .vivid）
   const interp = (la, lo)=>{
     let i1=0; while(i1<LATS.length-1 && LATS[i1+1]<=la) i1++;
     let j1=0; while(j1<LONS.length-1 && LONS[j1+1]<=lo) j1++;
@@ -2096,8 +2182,9 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     const v00=grid[la0+","+lo0], v10=grid[la1+","+lo0], v01=grid[la0+","+lo1], v11=grid[la1+","+lo1];
     if(v00==null&&v10==null&&v01==null&&v11==null) return null;
     const f=(la-la0)/(la1-la0||1), g=(lo-lo0)/(lo1-lo0||1);
-    const top=(v00!=null?v00:50)*(1-g)+(v01!=null?v01:50)*g;
-    const bot=(v10!=null?v10:50)*(1-g)+(v11!=null?v11:50)*g;
+    const gv = x => (x && x.vivid!=null) ? x.vivid : 50;
+    const top=gv(v00)*(1-g)+gv(v01)*g;
+    const bot=gv(v10)*(1-g)+gv(v11)*g;
     return top*(1-f)+bot*f;
   };
   // 鲜艳度 → 颜色（越红越强）
@@ -2196,6 +2283,7 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
   REGIONAL_CITIES.forEach(c=>{
     const x = px(c.lon), y = py(c.lat);
     let v = cityIdx && cityIdx[c.name]!=null ? cityIdx[c.name] : interp(c.lat, c.lon);
+    if(v!=null && typeof v === "object") v = v.vivid;
     if(v==null) return;
     ctx.beginPath();
     ctx.arc(x, y, 7, 0, Math.PI*2);
