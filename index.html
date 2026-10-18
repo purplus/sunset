@@ -1295,17 +1295,27 @@ function renderFactors(d){
   if(d0 && els.detailForecast){
     // ===== 通用鲜艳度因子计算 =====
     const vividFactors = (cloud, lowC, midC, highC, cloudBase) => {
-      // 1. 云量适合度
-      const totalC = (midC!=null?midC:0) + (highC!=null?highC:0);
-      const totalCloud = cloud!=null ? cloud : totalC;
+      // 1. 云量适合度：只看染色云（中云+高云）——低云是遮挡不是染色主体
+      //    100% 高云卷云＝满屏染红的理想条件，不应判为"云多挡光"
+      const hasLayers = midC!=null || highC!=null;
+      const dyeC = (midC!=null?midC:0) + (highC!=null?highC:0);
       let cloudFit;
-      if(totalCloud==null) cloudFit = 50;
-      else if(totalCloud < 10) cloudFit = 15;
-      else if(totalCloud < 30) cloudFit = 45;
-      else if(totalCloud < 45) cloudFit = 85;
-      else if(totalCloud < 70) cloudFit = 100;
-      else if(totalCloud < 85) cloudFit = 75;
-      else cloudFit = 45;
+      if(hasLayers){
+        // 有分层数据：染色云=中+高，低云不计入（全低云=无染色云=低分）
+        if(dyeC < 10) cloudFit = 15;
+        else if(dyeC < 30) cloudFit = 45;
+        else if(dyeC < 45) cloudFit = 85;
+        else if(dyeC < 80) cloudFit = 100;
+        else cloudFit = 75;
+      } else if(cloud!=null){
+        // 无分层数据：回退用总云量粗判
+        if(cloud < 10) cloudFit = 15;
+        else if(cloud < 30) cloudFit = 45;
+        else if(cloud < 45) cloudFit = 85;
+        else if(cloud < 70) cloudFit = 100;
+        else if(cloud < 85) cloudFit = 75;
+        else cloudFit = 45;
+      } else cloudFit = 50;
       // 2. 云高适合度
       let heightFit = 60;
       if(cloudBase!=null && !isNaN(cloudBase)){
@@ -1320,14 +1330,17 @@ function renderFactors(d){
         const total = midW + highW;
         if(total>0) heightFit = Math.round((midW*75 + highW*95)/total);
       }
-      // 3. 三层云占比适合度
+      // 3. 三层云占比适合度：染色云（中+高）占比越高越易出彩
       const sum = (lowC!=null?lowC:0) + (midC!=null?midC:0) + (highC!=null?highC:0);
       let layerFit = 50;
       if(sum>0){
-        const lowShare = (lowC!=null?lowC:0)/sum;
-        const midShare = (midC!=null?midC:0)/sum;
-        const highShare = (highC!=null?highC:0)/sum;
-        layerFit = Math.round(100*(midShare*0.55 + highShare*0.40 + lowShare*0.05));
+        const dyeShare = ((midC!=null?midC:0)+(highC!=null?highC:0))/sum;
+        layerFit = Math.round(100*(0.4 + 0.6*dyeShare));
+      }
+      // 几乎无染色云（中+高<10%）：没有东西可被照亮，云高/占比分一并压低
+      if(hasLayers && dyeC < 10){
+        heightFit = Math.min(heightFit, 20);
+        layerFit = Math.min(layerFit, 20);
       }
       const vivid = Math.round(cloudFit*0.45 + heightFit*0.35 + layerFit*0.20);
       const finalVivid = Math.max(0, Math.min(100, vivid - ((lowC!=null && lowC>55)?15:0)));
@@ -1347,17 +1360,17 @@ function renderFactors(d){
       : "无低云，无法取云高";
     const detailItems = [
       {k:"晚霞鲜艳度", v:ss.finalVivid+" / 100", u:"", note:ss.finalVivid>75?"色彩预计饱和，出片概率高":ss.finalVivid>55?"有一定色彩，值得蹲":ss.finalVivid>35?"色彩平淡，参考性一般":"预计无色彩", s:ss.finalVivid},
-      {k:"晚霞云量", v:(d0.cloud!=null?Math.round(d0.cloud):"--")+"%", u:"", note:"日落总云量 "+ss.cloudFit+"/100 适合度", s:ss.cloudFit},
+      {k:"晚霞云量", v:(d0.cloud!=null?Math.round(d0.cloud):"--")+"%", u:"", note:"染色云（中+高）适合度 "+ss.cloudFit+"/100", s:ss.cloudFit},
       {k:"晚霞云高", v:cloudHStr, u:"", note:heightNote, s:ss.heightFit},
-      {k:"晚霞三层占比", v:"低"+(d0.lowC!=null?Math.round(d0.lowC):"--")+"% 中"+(d0.midC!=null?Math.round(d0.midC):"--")+"% 高"+(d0.highC!=null?Math.round(d0.highC):"--")+"%", u:"", note:"中高云占比适合度 "+ss.layerFit+"/100", s:ss.layerFit}
+      {k:"晚霞三层占比", v:"低"+(d0.lowC!=null?Math.round(d0.lowC):"--")+"% 中"+(d0.midC!=null?Math.round(d0.midC):"--")+"% 高"+(d0.highC!=null?Math.round(d0.highC):"--")+"%", u:"", note:"染色云占比适合度 "+ss.layerFit+"/100", s:ss.layerFit}
     ];
     // 朝霞卡片（有日出数据才显示）
     if(sr){
       detailItems.push(
         {k:"朝霞鲜艳度", v:sr.finalVivid+" / 100", u:"", note:sr.finalVivid>75?"色彩预计饱和，出片概率高":sr.finalVivid>55?"有一定色彩，值得蹲":sr.finalVivid>35?"色彩平淡，参考性一般":"预计无色彩", s:sr.finalVivid},
-        {k:"朝霞云量", v:(d0.srCloud!=null?Math.round(d0.srCloud):"--")+"%", u:"", note:"日出总云量 "+sr.cloudFit+"/100 适合度", s:sr.cloudFit},
+        {k:"朝霞云量", v:(d0.srCloud!=null?Math.round(d0.srCloud):"--")+"%", u:"", note:"染色云（中+高）适合度 "+sr.cloudFit+"/100", s:sr.cloudFit},
         {k:"朝霞云高", v:srCloudHStr, u:"", note:srHeightNote, s:sr.heightFit},
-        {k:"朝霞三层占比", v:"低"+(d0.srLow!=null?Math.round(d0.srLow):"--")+"% 中"+(d0.srMid!=null?Math.round(d0.srMid):"--")+"% 高"+(d0.srHigh!=null?Math.round(d0.srHigh):"--")+"%", u:"", note:"中高云占比适合度 "+sr.layerFit+"/100", s:sr.layerFit}
+        {k:"朝霞三层占比", v:"低"+(d0.srLow!=null?Math.round(d0.srLow):"--")+"% 中"+(d0.srMid!=null?Math.round(d0.srMid):"--")+"% 高"+(d0.srHigh!=null?Math.round(d0.srHigh):"--")+"%", u:"", note:"染色云占比适合度 "+sr.layerFit+"/100", s:sr.layerFit}
       );
     }
     els.detailForecast.innerHTML = detailItems.map(it=>`
