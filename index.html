@@ -948,6 +948,18 @@ function hmFromISO(iso){
   return m ? m[1]+":"+m[2] : "00:00";
 }
 
+/* 云底高度估算：Open-Meteo 对中国区域不返回 cloud_base（全 null），
+   当低云>0 且有温度/露点数据时，用抬升凝结高度公式 LCL ≈ (T−Td)×125m 实时估算；
+   无低云 → 返回 null（界面显示"无"） */
+function estCloudBase(raw, lowC, temp, dew){
+  if(raw!=null && !isNaN(raw)) return {cb: raw, est: false};
+  if(lowC!=null && lowC>0 && temp!=null && dew!=null && !isNaN(temp) && !isNaN(dew)){
+    const v = Math.round((temp - dew) * 125);
+    if(v>=0 && v<15000) return {cb: v, est: true};
+  }
+  return {cb: null, est: false};
+}
+
 /* 组装未来多天数据 */
 function buildDays(weather){
   const hourly = weather.hourly;
@@ -974,10 +986,16 @@ function buildDays(weather){
     const vis = (hourly.visibility && hourly.visibility[idx]!==null) ? hourly.visibility[idx]/1000 : 20;
     const wind = pick(hourly.wind_speed_10m);
     const temp = pick(hourly.temperature_2m);
+    const dew  = pick(hourly.dew_point_2m);
     const lowC = pick(hourly.cloud_cover_low);
     const midC = pick(hourly.cloud_cover_mid);
     const highC = pick(hourly.cloud_cover_high);
-    const cloudBase = (hourly.cloud_base && hourly.cloud_base[idx]!==null) ? hourly.cloud_base[idx] : null;
+    // 云底高度：优先 Open-Meteo 真实 cloud_base；缺失且【低云>0】时用露点差法实时估算
+    // （抬升凝结高度 LCL ≈ (T − Td) × 125 m，气象学标准公式）；无低云则显示"无"
+    const rawCB = (hourly.cloud_base && hourly.cloud_base[idx]!==null) ? hourly.cloud_base[idx] : null;
+    const cbInfo = estCloudBase(rawCB, lowC, temp, dew);
+    const cloudBase = cbInfo.cb;
+    const cloudBaseEst = cbInfo.est;
     const aod = (hourly.aerosol_optical_depth && hourly.aerosol_optical_depth[idx]!=null) ? hourly.aerosol_optical_depth[idx] : null;
     // 朝霞数据（日出时刻）
     const srCloud = pickSR(hourly.cloud_cover);
@@ -988,7 +1006,12 @@ function buildDays(weather){
     const srWind = pickSR(hourly.wind_speed_10m);
     const srHum = pickSR(hourly.relative_humidity_2m);
     const srVis = (idxSR>=0 && hourly.visibility && hourly.visibility[idxSR]!==null) ? hourly.visibility[idxSR]/1000 : 20;
-    const srCloudBase = (idxSR>=0 && hourly.cloud_base && hourly.cloud_base[idxSR]!==null) ? hourly.cloud_base[idxSR] : null;
+    const srTemp = (idxSR>=0 && hourly.temperature_2m) ? hourly.temperature_2m[idxSR] : null;
+    const srDew  = (idxSR>=0 && hourly.dew_point_2m) ? hourly.dew_point_2m[idxSR] : null;
+    const rawSrb = (idxSR>=0 && hourly.cloud_base && hourly.cloud_base[idxSR]!==null) ? hourly.cloud_base[idxSR] : null;
+    const srbInfo = estCloudBase(rawSrb, srLow, srTemp, srDew);
+    const srCloudBase = srbInfo.cb;
+    const srCloudBaseEst = srbInfo.est;
     const index = computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC);
     const indexSR = idxSR>=0 ? computeIndex(srCloud, srHum, srVis, srWind, srAOD, srLow, srMid, srHigh) : null;
     // 海拔修正：高海拔视野开阔加分（>1000m +3，>2000m +5）
@@ -997,8 +1020,8 @@ function buildDays(weather){
     const finalIdx = Math.min(100, index + elevBonus);
     const finalIdxSR = indexSR!=null ? Math.min(100, indexSR + elevBonus) : null;
     const cloudCurve = perDayHourly(hourly, dateStr, "cloud_cover");
-    days.push({date, dateStr, sunsetHM, sunriseHM, cloud, hum, vis, wind, temp, lowC, midC, highC, cloudBase, aod, index:finalIdx,
-      srCloud, srLow, srMid, srHigh, srAOD, srVis, srWind, srHum, srCloudBase, srIndex: finalIdxSR,
+    days.push({date, dateStr, sunsetHM, sunriseHM, cloud, hum, vis, wind, temp, lowC, midC, highC, cloudBase, cloudBaseEst, aod, index:finalIdx,
+      srCloud, srLow, srMid, srHigh, srAOD, srVis, srWind, srHum, srCloudBase, srCloudBaseEst, srIndex: finalIdxSR,
       goldenStart: hmFromMinutes(sunsetHM, -60), blueStart: hmFromMinutes(sunsetHM, 20),
       goldenEnd: sunsetHM, blueEnd: hmFromMinutes(sunsetHM, 50),
       srGoldenStart: srSunriseHM||"--", srGoldenEnd: srSunriseHM ? hmFromMinutes(srSunriseHM, 60) : "--",
@@ -1282,7 +1305,7 @@ function renderFactors(d){
     {k:"高云", v:fmtPct(d.highC), u:"", note:"卷云类最易被染成金红", s:scoreCloud(d.highC==null?40:d.highC)},
     {k:"气溶胶 AOD", v:fmtAOD(d.aod), u:"", note:isMet?"MET Norway 无此数据":"CAMS 霾厚度，越低色彩越红", s:scoreAOD(d.aod)},
     {k:"能见度", v:fmtKm(d.vis), u:"", note:isWindy?"Windy 无直接值，由低云推导":"通透度影响色彩", s:scoreVis(d.vis)},
-    {k:"云底高度", v:d.cloudBase==null||isNaN(d.cloudBase)?"无":Math.round(d.cloudBase)+" m", u:"", note:(d.cloudBase==null||isNaN(d.cloudBase))?"当前无低云，无需遮挡判断":"云底高度 "+Math.round(d.cloudBase)+"m · 日落视线约 "+(d.cloudBase/0.0875/1000).toFixed(1)+"km 内无遮挡", s:50},
+    {k:"云底高度", v:d.cloudBase==null||isNaN(d.cloudBase)?"无":Math.round(d.cloudBase)+" m"+(d.cloudBaseEst?"*":""), u:"", note:(d.cloudBase==null||isNaN(d.cloudBase))?(d.lowC!=null&&d.lowC>0?"当前无云底数据（缺少温度/露点）":"当前无低云，无云底高度"):(d.cloudBaseEst?("实时估算（露点差法）· 日落视线约 "+(d.cloudBase/0.0875/1000).toFixed(1)+"km 内无遮挡"):("云底高度 "+Math.round(d.cloudBase)+"m · 日落视线约 "+(d.cloudBase/0.0875/1000).toFixed(1)+"km 内无遮挡")), s:50},
     {k:"地面风速", v:d.wind==null?"--":Math.round(d.wind)+" km/h", u:"", note:"大风易吹散云层", s:scoreWind(d.wind==null?10:d.wind)}
   ];
   els.factors.innerHTML = items.map(it=>`
@@ -1376,14 +1399,14 @@ function renderFactors(d){
     const ss = vividFactors(d0.cloud, d0.lowC, d0.midC, d0.highC, d0.cloudBase);
     // 朝霞因子（次日日出时刻）
     const sr = d0.srCloud!=null ? vividFactors(d0.srCloud, d0.srLow, d0.srMid, d0.srHigh, d0.srCloudBase) : null;
-    const cloudHStr = (d0.cloudBase!=null && !isNaN(d0.cloudBase)) ? Math.round(d0.cloudBase)+" m" : "无";
-    const srCloudHStr = (d0.srCloudBase!=null && !isNaN(d0.srCloudBase)) ? Math.round(d0.srCloudBase)+" m" : "无";
+    const cloudHStr = (d0.cloudBase!=null && !isNaN(d0.cloudBase)) ? Math.round(d0.cloudBase)+" m"+(d0.cloudBaseEst?"*":"") : "无";
+    const srCloudHStr = (d0.srCloudBase!=null && !isNaN(d0.srCloudBase)) ? Math.round(d0.srCloudBase)+" m"+(d0.srCloudBaseEst?"*":"") : "无";
     const heightNote = (d0.cloudBase!=null && !isNaN(d0.cloudBase))
-      ? "云高适合度 "+ss.heightFit+"/100"
-      : "无低云，无法取云高";
+      ? "云高适合度 "+ss.heightFit+"/100"+(d0.cloudBaseEst?" · 露点差法实时估算":"")
+      : (d0.lowC!=null && d0.lowC>0 ? "有低云但缺温度/露点，无法估算云高" : "无低云，无云底高度");
     const srHeightNote = (d0.srCloudBase!=null && !isNaN(d0.srCloudBase))
-      ? "云高适合度 "+sr.heightFit+"/100"
-      : "无低云，无法取云高";
+      ? "云高适合度 "+sr.heightFit+"/100"+(d0.srCloudBaseEst?" · 露点差法实时估算":"")
+      : (d0.srLow!=null && d0.srLow>0 ? "有低云但缺温度/露点，无法估算云高" : "无低云，无云底高度");
     const detailItems = [
       {k:"晚霞鲜艳度", v:ss.finalVivid+" / 100", u:"", note:ss.finalVivid>75?"色彩预计饱和，出片概率高":ss.finalVivid>55?"有一定色彩，值得蹲":ss.finalVivid>35?"色彩平淡，参考性一般":"预计无色彩", s:ss.finalVivid},
       {k:"晚霞云量", v:(d0.cloud!=null?Math.round(d0.cloud):"--")+"%", u:"", note:"染色云（中+高）适合度 "+ss.cloudFit+"/100", s:ss.cloudFit},
@@ -1405,14 +1428,15 @@ function renderFactors(d){
         <div class="fv">${it.v}</div>
         <div class="bar"><i style="width:${it.s}%"></i></div>
         <div class="fnote">${it.note}</div>
-      </div>`).join("");
+      </div>`).join("")
+      + ((d0.cloudBaseEst||d0.srCloudBaseEst) ? '<div style="color:var(--ink-3);font-size:11px;margin-top:6px">* = 云底高度由实时温度露点差法估算（气象学抬升凝结高度公式）</div>' : "");
   }
 
   // 云层距离分析（巧摄原理 + 实时海拔 + 实时云高）
   if(d0 && els.cloudDistanceBox){
     const R = 6371; // 地球半径 km
     const hObs = (state.city.elev || 0) / 1000; // 观测点海拔 km（实时）
-    // 实时云高：只用真实 cloud_base，没有就是"无"
+    // 云高：真实 cloud_base 优先；缺失时用露点差法实时估算（低云>0 才有）；无低云显示"无"
     const hasCloudBase = d0.cloudBase != null && !isNaN(d0.cloudBase);
     let html;
     if(hasCloudBase){
@@ -1426,22 +1450,23 @@ function renderFactors(d){
       html = `
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:10px">
         <div style="color:var(--ink-2)">观测点海拔：<b style="color:#fff">${Math.round(hObs*1000)} m</b> <span style="color:var(--ink-3);font-size:11px">（实时）</span></div>
-        <div style="color:var(--ink-2)">云高：<b style="color:#fff">${Math.round(d0.cloudBase)} m</b> <span style="color:var(--ink-3);font-size:11px">实时云底高度</span></div>
+        <div style="color:var(--ink-2)">云高：<b style="color:#fff">${Math.round(d0.cloudBase)} m</b> <span style="color:var(--ink-3);font-size:11px">${d0.cloudBaseEst?"露点差法实时估算":"实时云底高度"}</span></div>
       </div>
       <div style="color:#ffcc44;font-weight:bold">近距（地平线云距离）：${Math.round(dNear)} km</div>
       <div style="color:var(--ink-3);font-size:12px;margin-bottom:6px">→ 这个距离以内最好有云，会被低角度阳光照亮变红</div>
       <div style="color:#ff6b6b;font-weight:bold">远距（最远无云距离）：${Math.round(dFar)} km</div>
       <div style="color:var(--ink-3);font-size:12px;margin-bottom:6px">→ ${Math.round(dNear)} km 到 ${Math.round(dFar)} km 之间必须无云，否则遮挡光线</div>
       <div style="color:${d0.lowC>55?'#ff6b6b':'var(--ink-2)'};font-size:12px;margin-top:4px">${blockRisk}</div>
-      <div style="color:var(--ink-3);font-size:11px;margin-top:6px">海拔来自实时地形数据 · 云高来自所选日期的实时预报</div>
+      <div style="color:var(--ink-3);font-size:11px;margin-top:6px">海拔来自实时地形数据 · 云高来自所选日期的实时预报${d0.cloudBaseEst?"（温度露点差法）":""}</div>
     `;
     } else {
+      const noLowNote = (d0.lowC!=null && d0.lowC>0) ? "有低云但缺温度/露点数据，无法估算云高" : "当前预报无低云，无云底高度";
       html = `
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:10px">
         <div style="color:var(--ink-2)">观测点海拔：<b style="color:#fff">${Math.round(hObs*1000)} m</b> <span style="color:var(--ink-3);font-size:11px">（实时）</span></div>
-        <div style="color:var(--ink-2)">云高：<b style="color:#888">无</b> <span style="color:var(--ink-3);font-size:11px">当前无低云</span></div>
+        <div style="color:var(--ink-2)">云高：<b style="color:#888">无</b> <span style="color:var(--ink-3);font-size:11px">${d0.lowC!=null&&d0.lowC>0?"缺数据":"无低云"}</span></div>
       </div>
-      <div style="color:var(--ink-2);font-size:13px;margin-bottom:6px">当前预报无低云，无云底高度数据，无法计算近距/远距。</div>
+      <div style="color:var(--ink-2);font-size:13px;margin-bottom:6px">${noLowNote}，无法计算近距/远距。</div>
       <div style="color:var(--ink-3);font-size:11px;margin-top:4px">海拔来自实时地形数据 · 云高随所选日期的预报实时变化</div>
     `;
     }
@@ -2007,55 +2032,59 @@ async function renderPredictionMap(){
       clearTimeout(t);
       if(r.ok) geo = await r.json();
     }catch(e){}
-    // 2) 并行获取：全国 4° 网格实时云量（160 点，8 路并发，失败自动重试一次）+ 32 城指数（保底）
+    // 2) 批量获取：全国 4° 网格实时云量 + 城市指数
+    //    Open-Meteo 支持逗号分隔多坐标（一次请求最多 ~60 点），把原先 192 个单点并发
+    //    压缩为 4 个批量请求，手机网络下不再超时/被限流
     const LATS=[], LONS=[];
     for(let la=18; la<=54; la+=4) LATS.push(la);
     for(let lo=73; lo<=133; lo+=4) LONS.push(lo);
     const grid = {};      // grid[key] = {vivid, cloud}
     const cityIdx = {};   // 城市保底指数
-    let done=0;
-    const fetchVivid = async (la, lo)=>{
+    // 组装全部点位（网格 + 城市）
+    const allPts = [];
+    LATS.forEach(la=>{ LONS.forEach(lo=>{ allPts.push({la, lo, key: la+","+lo}); }); });
+    REGIONAL_CITIES.forEach(c=>{ allPts.push({la:c.lat, lo:c.lon, key:"c_"+c.name, city:c}); });
+    // 一次批量请求最多 60 个坐标
+    const BATCH = 60;
+    const parsePoint = (w)=>{
+      const c = w && w.current ? w.current : {};
+      const lowC = c.cloud_cover_low!=null?c.cloud_cover_low:0;
+      const midC = c.cloud_cover_mid!=null?c.cloud_cover_mid:0;
+      const highC = c.cloud_cover_high!=null?c.cloud_cover_high:0;
+      const cloud = c.cloud_cover!=null?c.cloud_cover: Math.max(lowC, midC, highC);
+      const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
+      return {vivid, cloud};
+    };
+    const fetchBatch = async (pts)=>{
       const ac = new AbortController();
-      const t = setTimeout(()=>ac.abort(), 12000);
+      const t = setTimeout(()=>ac.abort(), 20000);
       try{
-        const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+la+"&longitude="+lo
-          + "&current=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=1&timezone=auto", {signal: ac.signal});
+        const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+pts.map(p=>p.la).join(",")
+          + "&longitude="+pts.map(p=>p.lo).join(",")
+          + "&current=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=1", {signal: ac.signal});
         clearTimeout(t);
         if(!res.ok) return null;
-        const w = await res.json();
-        const c = w.current || {};
-        const lowC = c.cloud_cover_low!=null?c.cloud_cover_low:0;
-        const midC = c.cloud_cover_mid!=null?c.cloud_cover_mid:0;
-        const highC = c.cloud_cover_high!=null?c.cloud_cover_high:0;
-        const cloud = c.cloud_cover!=null?c.cloud_cover: Math.max(lowC, midC, highC);
-        const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
-        return {vivid, cloud};
+        const arr = await res.json();
+        return Array.isArray(arr) ? arr : null;
       }catch(e){ clearTimeout(t); return null; }
     };
-    // 网格 + 城市并行（同一池子）
-    const allTasks = [];
-    LATS.forEach((la, ai)=>{
-      LONS.forEach((lo, ji)=>{
-        allTasks.push({la, lo, key: la+","+lo});
-      });
-    });
-    REGIONAL_CITIES.forEach(c=>{
-      allTasks.push({la:c.lat, lo:c.lon, key:"c_"+c.name, city:c});
-    });
-    const workers = Array.from({length:8}, (_,wi)=> (async ()=>{
-      for(let i=wi; i<allTasks.length; i+=8){
-        const tk = allTasks[i];
-        let v = await fetchVivid(tk.la, tk.lo);
-        if(v==null) v = await fetchVivid(tk.la, tk.lo); // 重试一次
-        if(v!=null){
-          if(tk.city) cityIdx[tk.city.name] = v;
-          else grid[tk.key] = v;
-        }
-        done++;
-        if(tag && done%16===0) tag.textContent = "生成中… " + Math.round(done/allTasks.length*100) + "%";
+    // 顺序分批发（每批失败重试一次）
+    const batches = [];
+    for(let i=0; i<allPts.length; i+=BATCH) batches.push(allPts.slice(i, i+BATCH));
+    for(let bi=0; bi<batches.length; bi++){
+      let arr = await fetchBatch(batches[bi]);
+      if(!arr) arr = await fetchBatch(batches[bi]); // 重试一次
+      if(arr){
+        arr.forEach((w, ii)=>{
+          const p = batches[bi][ii];
+          if(!p) return;
+          const v = parsePoint(w);
+          if(p.city) cityIdx[p.city.name] = v;
+          else grid[p.key] = v;
+        });
       }
-    }));
-    await Promise.all(workers);
+      if(tag) tag.textContent = "生成中… " + Math.round(Math.min(1,(bi+1)/batches.length)*100) + "%";
+    }
     const gridN = Object.keys(grid).length, cityN = Object.keys(cityIdx).length;
     if(gridN < 20 && cityN < 5){
       if(tag) tag.textContent = "云况数据不足，请稍后重试";
