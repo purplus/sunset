@@ -235,11 +235,20 @@
     .sliders{grid-template-columns:1fr}
     .times{grid-template-columns:1fr 1fr}
     .hero{padding:20px}
+    .hero-body{flex-direction:column;gap:16px}
+    .gauges-row{width:100%;justify-content:center}
   }
   @media (max-width:480px){
     .week{grid-template-columns:repeat(3,1fr)}
-    .hero-body{gap:18px}
-    .gauge{width:150px;height:150px}
+    .hero-body{gap:14px}
+    .gauge{width:130px;height:130px}
+    .gauge .num{font-size:44px}
+    .gauge .denom{font-size:12px}
+    .gauges-row{gap:12px}
+    .times{gap:8px}
+    .tcard{padding:10px}
+    .tcard .k{font-size:11px}
+    .tcard .v{font-size:18px}
     .keypanel input{width:150px}
   }
 </style>
