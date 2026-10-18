@@ -393,6 +393,13 @@
       <button class="chip" data-sattype="dusk" style="background:var(--panel);border:1px solid rgba(255,140,120,.3);color:#ffd9d0;padding:5px 12px;border-radius:999px;cursor:pointer">晚霞</button>
       <span style="align-self:center">实况可切时间看近几小时云动 · 虚线=各地日出/日落等时线</span>
     </div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;font-size:11px;color:#8f9dc0" id="satLayerBar">
+      <span style="align-self:center;color:#9aa7c7">图层</span>
+      <button class="chip" data-layer="vis" style="background:rgba(64,196,255,.18);border:1px solid #5ec2ff;color:#fff;padding:5px 12px;border-radius:999px;cursor:pointer">可见光</button>
+      <button class="chip" data-layer="ir" style="background:var(--panel);border:1px solid rgba(100,200,255,.3);color:#cfe3ff;padding:5px 12px;border-radius:999px;cursor:pointer">红外</button>
+      <button class="chip" data-layer="air" style="background:var(--panel);border:1px solid rgba(100,200,255,.3);color:#cfe3ff;padding:5px 12px;border-radius:999px;cursor:pointer">气团</button>
+      <span style="align-self:center;color:#6f7fa0">可见光最接近实拍，夜间自动切红外</span>
+    </div>
   </div>
 
   <div class="section">
@@ -1982,16 +1989,26 @@ function updateLeafletMap(){
   }
 }
 
-/* ================= 卫星实况云图（GIBS 葵花9 Himawari AirMass） ================= */
+/* ================= 卫星实况云图（GIBS 葵花9 Himawari） ================= */
 // 数据源：NASA GIBS WMTS 瓦片（CORS 开放，浏览器可直接跨域绘制）
-// 瓦片模板：https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Air_Mass/default/{Time}/GoogleMapsCompatible_Level6/{z}/{row}/{col}.png
-// 实测：中国区域 z5（x22..28, y10..14，共 35 瓦片，256px/瓦）全部可下载；数据延迟约 2 小时
+// 三种图层（用户可切换）：
+//   可见光 Band3_Red_Visible_1km —— 黑白真云图，观感最接近实拍；仅白天有数据
+//   红外 Band13_Clean_Infrared   —— 灰度红外云图 + 强对流蓝色高亮；24 小时可用
+//   气团 Air_Mass                —— 气团分析色（绿/橙/蓝），识别冷暖锋与云顶；24 小时可用
+// 瓦片：中国区域 z5（x22..28, y10..14，共 35 瓦片，256px/瓦）三种产品全部可下载；数据延迟约 2 小时
 const SAT_LEVEL = 5;                                  // z5：32x32 全球瓦片
 const SAT_COL0 = 22, SAT_COL1 = 28;                   // 中国经度 73~135
 const SAT_ROW0 = 10, SAT_ROW1 = 14;                   // 中国纬度 54~18
 const SAT_BOUNDS = {la0:18, la1:54, lo0:73, lo1:135}; // 中国主体范围（绘图裁剪）
 const SAT_TIME_STEP_MS = 30 * 60 * 1000;               // 时间轴步长 30 分钟
+const SAT_LAYERS = {
+  vis: { id:"Band3_Red_Visible_1km",  tms:"GoogleMapsCompatible_Level7", label:"可见光",  dayOnly:true },
+  ir:  { id:"Band13_Clean_Infrared",  tms:"GoogleMapsCompatible_Level6", label:"红外",    dayOnly:false },
+  air: { id:"Himawari_AHI_Air_Mass",  tms:"GoogleMapsCompatible_Level6", label:"气团",    dayOnly:false }
+};
 let satType = "dusk";                                  // dawn=朝霞(日出等时线) dusk=晚霞(日落等时线)
+let satLayer = "vis";                                  // vis/ir/air；默认可见光，夜间自动降级
+let satLayerAutoFallback = false;                      // 是否已发生自动降级
 let satFrame = null;                                   // 当前帧时间字符串
 let satLoading = false;
 
@@ -2002,19 +2019,52 @@ function webMercTile(lat, lon, z){
   return {x, y};
 }
 
-// 找最近可用帧：从 now-2h 起向前每 10 分钟探测（GIBS 数据延迟约 2 小时）
+// 找最近可用帧：从 now-2.5h 起向前每 10 分钟探测（GIBS 数据延迟约 2h05m~2h10m）
+// 实测约束：GIBS 对同源连发限流（500ms 间隔 8 帧全 400，1200ms 间隔全 200）
+// → 固定 1200ms 间隔、6 帧（覆盖 2.5h~3.5h 前，必已发布）、单轮 + 一轮重试
+const SAT_PROBE_MAX = 6;     // 探测 6 帧（1 小时跨度）
+const SAT_PROBE_GAP = 1200;  // 每帧间隔（防限流）
+const SAT_PROBE_START_H = 2.5; // 从 now-2.5h 起（数据延迟约 2h10m，留余量）
 async function probeLatestSatFrame(){
   const now = Date.now();
-  for(let i=0; i<24; i++){
-    const t = new Date(now - 2*3600*1000 - i*10*60*1000);
-    const iso = t.toISOString().replace(/\.\d+Z$/,"Z");
-    const url = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Air_Mass/default/"+iso+"/GoogleMapsCompatible_Level6/5/12/26.png";
-    try{
-      const r = await fetch(url, {mode:"cors"});
-      if(r.ok) return iso;
-    }catch(e){}
+  for(let round=0; round<2; round++){
+    for(let i=0; i<SAT_PROBE_MAX; i++){
+      const t = new Date(now - SAT_PROBE_START_H*3600*1000 - i*10*60*1000);
+      const iso = t.toISOString().replace(/\.\d+Z$/,"Z");
+      const L = SAT_LAYERS[satLayer];
+      const url = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"+L.id+"/default/"+iso+"/"+L.tms+"/5/12/26.png";
+      try{
+        const ctl = new AbortController();
+        const to = setTimeout(()=>ctl.abort(), 8000);
+        const r = await fetch(url, {mode:"cors", signal: ctl.signal});
+        clearTimeout(to);
+        if(r.ok) return iso;
+      }catch(e){}
+      await new Promise(r=>setTimeout(r, SAT_PROBE_GAP));
+    }
+    if(round===0) await new Promise(r=>setTimeout(r, 2500));
   }
   return null;
+}
+
+// 探测可见光是否有白天帧（UTC 白天 = 全球有日照时段；中国白天约 UTC 0~10）
+function visHasDaylight(isoStr){
+  if(!isoStr) return false;
+  const h = parseInt(isoStr.slice(11,13), 10);
+  // 中国区域白天约 UTC 0~10（北京 8:00~18:00），边缘时段瓦片可能部分缺失
+  return h >= 0 && h <= 10;
+}
+// 当前帧大概率不在中国白天时段的快速判断（用于可见光直接降级，避免浪费探测请求）
+function visNowLikelyNight(){
+  const h = new Date(Date.now() - SAT_PROBE_START_H*3600*1000).getUTCHours();
+  return !(h >= 0 && h <= 10);
+}
+// 降级链：vis→ir→air（返回下一图层；已到 air 返回 null）
+const SAT_FALLBACK_ORDER = ["vis","ir","air"];
+function fallbackSatLayer(){
+  const i = SAT_FALLBACK_ORDER.indexOf(satLayer);
+  if(i < 0 || i >= SAT_FALLBACK_ORDER.length-1) return null;
+  return SAT_FALLBACK_ORDER[i+1];
 }
 
 // 绘制卫星实况云图
@@ -2029,9 +2079,43 @@ async function renderSatMap(){
   try{
     // 探测最近可用帧（首次）
     if(!satFrame){
+      // 可见光在当前时段几乎必为夜间：直接降级红外，跳过无谓探测
+      if(satLayer === "vis" && visNowLikelyNight()){
+        satLayer = "ir";
+        satLayerAutoFallback = true;
+        tag.textContent = "当前为夜晚，可见光无数据，已自动切换红外图层…";
+        satLoading = false;
+        await renderSatMap();
+        return;
+      }
       const f = await probeLatestSatFrame();
-      if(!f){ tag.textContent = "卫星云图暂不可用，请稍后重试"; satLoading=false; return; }
+      if(!f){
+        // 当前图层无数据：沿 vis→ir→air 降级链逐级切换
+        const next = fallbackSatLayer();
+        if(next){
+          const prev = satLayer;
+          satLayer = next;
+          satLayerAutoFallback = true;
+          tag.textContent = prev==="vis" ? "当前时段可见光无数据，已切换红外图层…" : "红外图层暂不可用，已切换气团图层…";
+          satFrame = null;
+          satLoading = false;
+          await renderSatMap();
+          return;
+        }
+        tag.textContent = "卫星云图暂不可用，请稍后重试";
+        satLoading=false; return;
+      }
       satFrame = f;
+      // 可见光帧不在白天时段：自动降级红外
+      if(satLayer === "vis" && !visHasDaylight(f)){
+        satLayer = "ir";
+        satLayerAutoFallback = true;
+        tag.textContent = "当前时段为夜晚，可见光无数据，已自动切换红外图层…";
+        satFrame = null;
+        satLoading = false;
+        await renderSatMap();
+        return;
+      }
       // 生成时间轴：当前帧 + 前 4 帧（近 2.5 小时）
       if(bar){
         bar.innerHTML = "";
@@ -2048,25 +2132,54 @@ async function renderSatMap(){
       }
     }
     // 并行加载 35 瓦片
+    const L = SAT_LAYERS[satLayer];
     const tiles = [];
     const rows = [];
     for(let row=SAT_ROW0; row<=SAT_ROW1; row++){
       const line = [];
       for(let col=SAT_COL0; col<=SAT_COL1; col++){
-        const url = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Air_Mass/default/"+satFrame+"/GoogleMapsCompatible_Level6/"+SAT_LEVEL+"/"+row+"/"+col+".png";
+        const url = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"+L.id+"/default/"+satFrame+"/"+L.tms+"/"+SAT_LEVEL+"/"+row+"/"+col+".png";
         line.push(url);
       }
       rows.push(line);
     }
     const flat = rows.flat();
-    const imgs = await Promise.all(flat.map(url=>new Promise(res=>{
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = ()=>res(img);
-      img.onerror = ()=>res(null);
-      img.src = url;
-    })));
+    // 分批加载防限流（GIBS 对高并发 400）：每批 6 片，批间 400ms
+    // 每片 12s 超时兜底（防止个别瓦片挂起导致整个渲染卡死）
+    const BATCH = 6, BATCH_GAP = 400, TILE_TIMEOUT = 12000;
+    const imgs = [];
+    for(let bi=0; bi<flat.length; bi+=BATCH){
+      const chunk = flat.slice(bi, bi+BATCH);
+      const batch = await Promise.all(chunk.map(url=>new Promise(res=>{
+        const img = new Image();
+        let done = false;
+        const finish = v=>{ if(!done){ done=true; res(v); } };
+        img.crossOrigin = "anonymous";
+        img.onload = ()=>finish(img);
+        img.onerror = ()=>finish(null);
+        setTimeout(()=>finish(null), TILE_TIMEOUT);
+        img.src = url;
+      })));
+      imgs.push(...batch);
+      if(bi+BATCH < flat.length) await new Promise(r=>setTimeout(r, BATCH_GAP));
+    }
     const good = imgs.filter(Boolean).length;
+    // 瓦片几乎全失败（可能目标时段/图层异常）：沿降级链切换
+    if(good === 0){
+      const next = fallbackSatLayer();
+      if(next){
+        const prev = satLayer;
+        satLayer = next;
+        satLayerAutoFallback = true;
+        tag.textContent = prev==="vis" ? "可见光云图加载失败，已切换红外图层…" : "红外云图加载失败，已切换气团图层…";
+        satFrame = null;
+        satLoading = false;
+        await renderSatMap();
+        return;
+      }
+      tag.textContent = "卫星云图暂不可用，请刷新重试";
+      satLoading=false; return;
+    }
     if(good < flat.length * 0.7){
       tag.textContent = "云图部分加载失败（"+good+"/"+flat.length+"），请刷新重试";
     }
@@ -2171,7 +2284,7 @@ async function renderSatMap(){
     });
     ctx.restore();
     // 时间戳
-    tag.textContent = satFrame ? ("葵花9 云图 " + satFrame.slice(0,16).replace("T"," ")) : "卫星云图";
+    tag.textContent = satFrame ? (SAT_LAYERS[satLayer].label + "·葵花9 " + satFrame.slice(0,16).replace("T"," ") + (satLayerAutoFallback ? "（已自动降级）" : "")) : "卫星云图";
   } catch(e){
     tag.textContent = "卫星云图加载失败";
   } finally {
@@ -2179,8 +2292,26 @@ async function renderSatMap(){
   }
 }
 
-// 卫星图：朝霞/晚霞切换
+// 卫星图：朝霞/晚霞切换 + 图层切换
 function initSat(){
+  // 图层切换（可见光/红外/气团）
+  document.querySelectorAll("#satLayerBar .chip").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      if(satLayer === b.dataset.layer) return;
+      document.querySelectorAll("#satLayerBar .chip").forEach(x=>{
+        x.style.borderColor = "rgba(100,200,255,.3)";
+        x.style.color = "#cfe3ff";
+        x.style.background = "var(--panel)";
+      });
+      b.style.borderColor = "#5ec2ff";
+      b.style.color = "#ffffff";
+      b.style.background = "rgba(64,196,255,.18)";
+      satLayer = b.dataset.layer;
+      satLayerAutoFallback = false;
+      satFrame = null;
+      renderSatMap();
+    });
+  });
   document.querySelectorAll("#satControls .chip").forEach(b=>{
     b.addEventListener("click", ()=>{
       if(satType === b.dataset.sattype) return;
