@@ -69,6 +69,36 @@
   .btn-loc:hover{border-color:rgba(255,140,66,.5);color:var(--ink)}
   .btn-loc:disabled{opacity:.5;cursor:default}
 
+  /* ===== 查询区（地点+日期合一）===== */
+  .query-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .query-bar .q-date{background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:12px;padding:9px 12px;font-size:14px;font-family:inherit;outline:none}
+  .btn-adv{
+    background:transparent;border:1px dashed var(--line);color:var(--ink-3);
+    padding:10px 14px;border-radius:12px;font-size:13px;font-family:inherit;cursor:pointer;transition:all .2s;white-space:nowrap;
+  }
+  .btn-adv:hover{border-color:rgba(140,120,255,.5);color:var(--ink-2)}
+  .btn-adv.open{border-color:rgba(140,120,255,.6);color:var(--violet)}
+
+  .adv-panel{
+    background:var(--panel-2);border:1px solid var(--line-soft);border-radius:14px;
+    padding:14px 16px;margin:-14px 0 20px;
+  }
+  .adv-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+
+  /* ===== 朝霞/晚霞切换 ===== */
+  .type-switch{display:flex;gap:6px;background:rgba(10,14,30,.6);border:1px solid var(--line-soft);border-radius:999px;padding:4px}
+  .type-tab{
+    border:0;background:transparent;color:var(--ink-2);font-family:inherit;font-size:14px;
+    padding:7px 16px;border-radius:999px;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:6px;
+  }
+  .type-tab b{font-size:13px;opacity:.75;font-variant-numeric:tabular-nums}
+  .type-tab.on{background:linear-gradient(90deg,rgba(255,140,66,.22),rgba(255,90,120,.2));color:var(--ink);border:1px solid rgba(255,140,66,.35)}
+  .type-tab.on[data-t="dawn"]{background:linear-gradient(90deg,rgba(74,168,216,.24),rgba(255,107,157,.2));border:1px solid rgba(120,180,240,.4)}
+  .type-tab.on b{opacity:1}
+  .gauge.side{opacity:.55;transform:scale(.86);transition:all .3s}
+  .gauge.side:hover{opacity:.85}
+  .hero-top{margin-bottom:4px}
+
   /* ===== hero ===== */
   .hero{
     background:var(--panel);border:1px solid var(--line);border-radius:20px;
@@ -196,9 +226,11 @@
 
   /* ===== 7 days ===== */
   .week{display:grid;grid-template-columns:repeat(7,1fr);gap:10px}
-  .day{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:12px 8px;cursor:pointer;transition:all .2s;text-align:center}
+  .day{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:12px 8px;cursor:pointer;transition:all .2s;text-align:center;font-family:inherit;color:inherit;width:100%;appearance:none;-webkit-appearance:none}
   .day:hover{border-color:rgba(255,140,66,.45);transform:translateY(-2px)}
   .day.on{border-color:var(--orange);background:rgba(255,140,66,.09)}
+  .day.best{border-color:rgba(255,180,80,.55);background:rgba(255,180,80,.07)}
+  .day .best-tag{font-size:9px;background:linear-gradient(90deg,var(--gold),var(--red));color:#140d1e;border-radius:8px;padding:1px 5px;margin-left:4px;font-weight:600;letter-spacing:.04em}
   .day .dname{font-size:12px;font-weight:500}
   .day .ddate{font-size:10.5px;color:var(--ink-3);margin-top:2px}
   .day .dnum{margin-top:8px;font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
@@ -239,6 +271,8 @@
     .hero-body{flex-direction:column;gap:16px;align-items:center}
     .gauges-row{width:100%;justify-content:center}
     .hero-main{width:100%;min-width:0}
+    .map-duo{grid-template-columns:1fr !important}
+    .query-bar{width:100%}
   }
   @media (max-width:480px){
     .week{grid-template-columns:repeat(3,1fr)}
@@ -265,56 +299,59 @@
     <div class="brand">
       <div class="kicker">Sky Glow Forecast</div>
       <h1>晚霞<em>预报</em></h1>
-      <div class="sub">天文日落时刻 × 实时云况，算算今天值不值得蹲一场火烧云</div>
+      <div class="sub">天文时刻 × 实时云况，算算今天值不值得蹲一场火烧云</div>
     </div>
-    <div class="loc">
+    <div class="query-bar">
       <div class="loc-box">
         <select id="citySel" class="loc-select" aria-label="选择城市"></select>
       </div>
-      <button id="locBtn" class="btn-loc">使用我的位置</button>
+      <input type="date" id="dateInput" class="q-date" aria-label="拍摄日期" />
+      <button id="todayBtn" class="btn-loc">今天</button>
+      <button id="locBtn" class="btn-loc">定位</button>
+      <button id="advBtn" class="btn-adv" aria-expanded="false">高级设置 ▾</button>
     </div>
   </header>
 
-  <div class="date-bar">
-    <span class="lbl">拍摄日期</span>
-    <input type="date" id="dateInput" />
-    <button id="todayBtn" class="btn-loc">回到今天</button>
-  </div>
-
-  <div class="toolbar">
-    <div class="model-switch">
-      <span class="lbl">数据源</span>
-      <div class="seg" id="sourceSeg">
-        <button data-s="windy">Windy</button>
-        <button data-s="om" class="on">Open-Meteo</button>
-        <button data-s="met">MET Norway</button>
+  <div class="adv-panel" id="advPanel" style="display:none">
+    <div class="adv-row">
+      <div class="model-switch">
+        <span class="lbl">数据源</span>
+        <div class="seg" id="sourceSeg">
+          <button data-s="windy">Windy</button>
+          <button data-s="om" class="on">Open-Meteo</button>
+          <button data-s="met">MET Norway</button>
+        </div>
       </div>
-    </div>
-    <div class="model-switch">
-      <span class="lbl">气象模型</span>
-      <div class="seg" id="modelSeg">
-        <button data-m="default" class="on">综合</button>
-        <button data-m="gfs">GFS</button>
-        <button data-m="ec">ECMWF</button>
+      <div class="model-switch">
+        <span class="lbl">气象模型</span>
+        <div class="seg" id="modelSeg">
+          <button data-m="default" class="on">综合</button>
+          <button data-m="gfs">GFS</button>
+          <button data-m="ec">ECMWF</button>
+        </div>
       </div>
-    </div>
-    <span class="model-note" id="modelNote">综合多源预报（Open-Meteo 最佳匹配）</span>
-    <div class="key-wrap" id="keyWrap">
-      <button id="keyBtn" class="btn-loc"><span class="key-dot" id="keyDot"></span>Windy Key</button>
-      <div class="keypanel" id="keyPanel" style="display:none">
-        <input id="keyInput" type="password" placeholder="粘贴 Windy Point Forecast API key" autocomplete="off" />
-        <button id="keySave">保存</button>
+      <span class="model-note" id="modelNote">综合多源预报（Open-Meteo 最佳匹配）</span>
+      <div class="key-wrap" id="keyWrap">
+        <button id="keyBtn" class="btn-loc"><span class="key-dot" id="keyDot"></span>Windy Key</button>
+        <div class="keypanel" id="keyPanel" style="display:none">
+          <input id="keyInput" type="password" placeholder="粘贴 Windy Point Forecast API key" autocomplete="off" />
+          <button id="keySave">保存</button>
+        </div>
       </div>
     </div>
   </div>
 
   <div class="hero" id="hero">
     <div class="hero-top">
+      <div class="type-switch" id="typeSwitch" role="tablist" aria-label="预报类型切换">
+        <button class="type-tab on" data-t="dusk" role="tab" aria-selected="true">晚霞 <b id="duskMini">--</b></button>
+        <button class="type-tab" data-t="dawn" role="tab" aria-selected="false">朝霞 <b id="dawnMini">--</b></button>
+      </div>
       <div class="hero-date" id="heroDate"></div>
     </div>
     <div class="hero-body">
       <div class="gauges-row">
-        <div class="gauge">
+        <div class="gauge" id="gaugeMain" data-t="dusk">
           <svg viewBox="0 0 190 190">
             <defs>
               <linearGradient id="gGrad" x1="0" y1="0" x2="1" y2="1">
@@ -329,7 +366,7 @@
           <div class="center"><div class="num" id="indexNum">--</div></div>
           <div class="gauge-label"><div class="denom">晚霞指数 / 100</div><div class="lvl" id="indexLvl"></div></div>
         </div>
-        <div class="gauge">
+        <div class="gauge" id="gaugeSide" data-t="dawn">
           <svg viewBox="0 0 190 190">
             <defs>
               <linearGradient id="gGradSR" x1="0" y1="0" x2="1" y2="1">
@@ -357,7 +394,7 @@
           <div class="tcard tcard-sunrise"><div class="k">日出时刻</div><div class="v" id="tSunrise">--:--</div><div class="s">天文日出，朝霞主参考</div></div>
           <div class="tcard tcard-sunrise"><div class="k">晨黄金时刻</div><div class="v" id="tGoldenSR">--:--</div><div class="s">日出后约 1 小时 · 暖色最浓</div></div>
           <div class="tcard tcard-sunrise"><div class="k">晨蓝调时刻</div><div class="v" id="tBlueSR">--:--</div><div class="s">日出前 20–50 分钟 · 冷蓝调</div></div>
-          <div class="tcard tcard-sunrise"><div class="k">朝霞指数</div><div class="v" id="tSunriseIdx">--</div><div class="s" id="tSunriseTime">日出彩霞概率</div></div>
+          <div class="tcard tcard-sunrise"><div class="k">朝霞指数</div><div class="v" id="tSunriseIdx">--</div><div class="s" id="tSunriseTime">日出彩霞指数</div></div>
         </div>
       </div>
     </div>
@@ -374,6 +411,12 @@
       <div class="spinner"></div>
       <p>正在读取该地天气与日落数据…</p>
     </div>
+  </div>
+
+  <div class="section week-top">
+    <div class="section-h"><h2>未来 7 天 · 哪天值得拍</h2><span class="tag">点击某天切换上方详情 · 自动标出本周最佳</span></div>
+    <div class="week" id="week"></div>
+    <div id="bestPick" style="display:none;margin-top:8px;background:rgba(255,180,80,.08);border:1px dashed rgba(255,180,80,.4);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--gold)"></div>
   </div>
 
   <div class="section">
@@ -404,7 +447,7 @@
 
   <div class="section">
     <div class="section-h"><h2>全国火烧云程度</h2><span class="tag" id="regionalNote">省会城市 · 直辖市 · 实时云况</span></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%" class="map-duo">
       <div style="position:relative;background:#151c36;border-radius:12px;overflow:hidden">
         <canvas id="predCloudCanvas" style="display:block;width:100%;height:auto"></canvas>
         <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px">实时云量</div>
@@ -444,8 +487,9 @@
     <div class="panel-manual">
       <div class="pm-title">
         <h3>手动预估</h3>
-        <span>想按自己判断的傍晚天空来试算？拖动调整，指数实时更新。</span>
+        <span>想按自己判断的傍晚天空来试算？拖动调整，指数实时更新（仅改动本次显示，不覆盖原始预报）。</span>
         <button class="pm-toggle" id="pmToggle">展开</button>
+        <button class="pm-toggle" id="pmReset" style="display:none">恢复预报</button>
       </div>
       <div class="sliders" id="pmSliders" style="display:none">
         <div class="sl"><label>日落时云量 <output id="outCloud">40%</output></label><input type="range" id="slCloud" min="0" max="100" value="40"></div>
@@ -483,8 +527,9 @@
   </div>
 
   <div class="section">
-    <div class="section-h"><h2>未来 7 天</h2><span class="tag">点击某天切换上方详情</span></div>
+    <div class="section-h"><h2>未来 7 天 · 哪天值得拍</h2><span class="tag">点击某天切换上方详情 · 自动标出本周最佳</span></div>
     <div class="week" id="week"></div>
+    <div id="bestPick" style="display:none;margin-top:8px;background:rgba(255,180,80,.08);border:1px dashed rgba(255,180,80,.4);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--gold)"></div>
   </div>
 
   <div class="method">
@@ -675,8 +720,8 @@ function level(index){
   if(index<35) return {t:"一般", c:"var(--bad)"};
   if(index<55) return {t:"平淡，顺路可看", c:"var(--warn)"};
   if(index<70) return {t:"有戏，值得蹲点", c:"var(--orange)"};
-  if(index<82) return {t:"机会不错，概率高", c:"var(--gold)"};
-  return {t:"绝佳，大概率出片", c:"var(--good)"};
+  if(index<82) return {t:"机会不错，指数较高", c:"var(--gold)"};
+  return {t:"绝佳，出片率高", c:"var(--good)"};
 }
 
 /* ================= 全局状态 ================= */
@@ -686,9 +731,13 @@ let state = {
   days: [],
   selDay: 0,
   manualOn: false,
+  manualBase: null,        // 进入手动前的原始预报快照（用于"恢复预报"）
+  viewType: "dusk",        // dusk 晚霞 / dawn 朝霞
   weatherOK: true,
+  isFallback: false,       // 数据获取失败时使用模拟值
   model: "default",       // default / gfs / ec
-  source: "om"            // windy / om
+  source: "om",           // windy / om
+  _loadSeq: 0             // 城市加载请求序号（防异步竞态）
 };
 function getWindyKey(){ try{ return localStorage.getItem(KEY_STORE)||""; }catch(e){ return ""; } }
 
@@ -705,7 +754,9 @@ const els = {
   tSunrise:$("tSunrise"), tGoldenSR:$("tGoldenSR"), tBlueSR:$("tBlueSR"),
   skyGrad:$("skyGrad"), sunMarker:$("sunMarker"), skyHud:$("skyHud"),
   factors:$("factors"), detailForecast:$("detailForecast"), crystalBanner:$("crystalBanner"), cloudDistanceBox:$("cloudDistanceBox"), week:$("week"),
-  pmToggle:$("pmToggle"), pmSliders:$("pmSliders"),
+  pmToggle:$("pmToggle"), pmSliders:$("pmSliders"), pmReset:$("pmReset"),
+  duskMini:$("duskMini"), dawnMini:$("dawnMini"), gaugeMain:$("gaugeMain"), gaugeSide:$("gaugeSide"),
+  advBtn:$("advBtn"), advPanel:$("advPanel"), bestPick:$("bestPick"),
   slCloud:$("slCloud"), slHum:$("slHum"), slVis:$("slVis"),
   outCloud:$("outCloud"), outHum:$("outHum"), outVis:$("outVis"),
   toast:$("toast"),
@@ -1129,53 +1180,76 @@ function renderHero(){
   const lv = level(d.index);
   const isToday = state.selDay===0;
   const tz = state.city.tz;
+  const isDusk = state.viewType==="dusk";
 
-  els.heroDate.innerHTML = (isToday ? "今晚 · " : "") + fmtDate(d.date)
+  // 数据状态标注（可信度）：模拟值 / 实时预报 / 手动调整
+  const stateChip = state.manualOn ? "手动调整"
+    : (state.isFallback ? "模拟值" : (state.weatherOK ? "实时预报" : "数据待刷新"));
+  const chipColor = state.manualOn ? "rgba(255,180,80,.14);color:var(--gold);border-color:rgba(255,180,80,.35"
+    : (state.isFallback ? "rgba(255,110,110,.14);color:#ff9c8a;border-color:rgba(255,110,110,.35"
+    : "rgba(64,196,255,.12);color:#7ce4ff;border-color:rgba(64,196,255,.3");
+
+  els.heroDate.innerHTML = (isToday ? "今日 · " : "") + fmtDate(d.date)
     + " <b>" + state.city.n + "</b>"
-    + '<span class="chip">'+ (isToday?"今晚":"预测") +'</span>';
+    + '<span class="chip" style="background:'+chipColor+'">'+ (isToday?(isDusk?"今晚":"明晨"):"预测") +'</span>'
+    + '<span class="chip" style="background:'+chipColor+'">'+stateChip+'</span>';
 
-  els.indexNum.textContent = d.index;
-  els.indexLvl.textContent = lv.t;
-  els.indexLvl.style.color = lv.c;
-  els.indexLvl.style.background = lv.c+"1f";
-  els.indexLvl.style.border = "1px solid "+lv.c+"55";
+  // 主盘 = viewType 类型；次盘 = 另一类型
+  const duskIdx = d.index, dawnIdx = d.srIndex || 0;
+  const duskLv = level(duskIdx), dawnLv = level(dawnIdx);
+  const mainIdx = isDusk ? duskIdx : dawnIdx;
+  const mainLv = isDusk ? duskLv : dawnLv;
+  const sideIdx = isDusk ? dawnIdx : duskIdx;
+  const sideLv = isDusk ? dawnLv : duskLv;
 
-  // 朝霞指数圆
-  const srIdx = d.srIndex || 0;
-  const srLv = level(srIdx);
-  els.indexNumSR.textContent = srIdx;
-  els.indexLvlSR.textContent = srLv.t;
-  els.indexLvlSR.style.color = srLv.c;
-  els.indexLvlSR.style.background = srLv.c+"1f";
-  els.indexLvlSR.style.border = "1px solid "+srLv.c+"55";
-  const circSR = 2*Math.PI*75;
-  els.gaugeArcSR.style.strokeDasharray = circSR.toFixed(1);
-  els.gaugeArcSR.style.strokeDashoffset = (circSR*(1 - srIdx/100)).toFixed(1);
-
+  els.indexNum.textContent = duskIdx;
+  els.indexLvl.textContent = duskLv.t;
+  els.indexLvl.style.color = duskLv.c;
+  els.indexLvl.style.background = duskLv.c+"1f";
+  els.indexLvl.style.border = "1px solid "+duskLv.c+"55";
   const circ = 2*Math.PI*75;
   els.gaugeArc.style.strokeDasharray = circ.toFixed(1);
-  els.gaugeArc.style.strokeDashoffset = (circ*(1 - d.index/100)).toFixed(1);
+  els.gaugeArc.style.strokeDashoffset = (circ*(1 - duskIdx/100)).toFixed(1);
 
-  els.verdict.textContent = verdictText(d);
-  els.verdictDetail.textContent = verdictDetail(d);
+  els.indexNumSR.textContent = dawnIdx;
+  els.indexLvlSR.textContent = dawnLv.t;
+  els.indexLvlSR.style.color = dawnLv.c;
+  els.indexLvlSR.style.background = dawnLv.c+"1f";
+  els.indexLvlSR.style.border = "1px solid "+dawnLv.c+"55";
+  const circSR = 2*Math.PI*75;
+  els.gaugeArcSR.style.strokeDasharray = circSR.toFixed(1);
+  els.gaugeArcSR.style.strokeDashoffset = (circSR*(1 - dawnIdx/100)).toFixed(1);
+
+  // 主盘放大高亮、次盘缩小降透明度
+  els.gaugeMain.classList.toggle("side", !isDusk);
+  els.gaugeSide.classList.toggle("side", isDusk);
+  // 切换标签上的小数字
+  els.duskMini.textContent = duskIdx;
+  els.dawnMini.textContent = dawnIdx;
+  document.querySelectorAll("#typeSwitch .type-tab").forEach(b=>{
+    const on = b.dataset.t===state.viewType;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on?"true":"false");
+  });
+
+  // 结论与时间卡跟随主类型
+  els.verdict.textContent = verdictText(d, isDusk);
+  els.verdictDetail.textContent = verdictDetail(d, isDusk);
 
   els.tSunset.textContent = d.sunsetHM;
   els.tGolden.textContent = d.goldenStart + " – " + d.sunsetHM;
   els.tBlue.textContent = d.blueStart + " – " + d.blueEnd;
-  // 朝霞时间轴
-  if(d.sunriseHM){
-    els.tSunrise.textContent = d.sunriseHM;
-    els.tGoldenSR.textContent = d.srGoldenStart + " – " + d.srGoldenEnd;
-    els.tBlueSR.textContent = d.srBlueStart + " – " + d.srBlueEnd;
-    els.tSunriseIdx.textContent = d.srIndex!=null ? d.srIndex : "--";
-    els.tSunriseTime.textContent = d.srIndex!=null ? "日出彩霞概率" : "无日出数据";
-  } else {
-    els.tSunrise.textContent = "--:--";
-    els.tGoldenSR.textContent = "--:--";
-    els.tBlueSR.textContent = "--:--";
-    els.tSunriseIdx.textContent = "--";
-    els.tSunriseTime.textContent = "无日出数据";
-  }
+  els.tSunrise.textContent = d.sunriseHM || "--:--";
+  els.tGoldenSR.textContent = d.srGoldenStart ? d.srGoldenStart + " – " + d.srGoldenEnd : "--:--";
+  els.tBlueSR.textContent = d.srBlueStart ? d.srBlueStart + " – " + d.srBlueEnd : "--:--";
+  els.tSunriseIdx.textContent = d.srIndex!=null ? d.srIndex : "--";
+  els.tSunriseTime.textContent = d.srIndex!=null ? "日出彩霞指数" : "无日出数据";
+
+  // 时间卡组切换显示
+  const duskTimes = els.tSunset.parentElement;
+  const dawnTimes = els.tSunrise.parentElement;
+  if(duskTimes) duskTimes.style.display = isDusk ? "" : "none";
+  if(dawnTimes) dawnTimes.style.display = isDusk ? "none" : "";
 
   renderSky(d, isToday);
   renderFactors(d);
@@ -1211,30 +1285,35 @@ function renderAzimuth(d){
   `;
 }
 
-function verdictText(d){
-  const lv = level(d.index);
-  if(lv.t.startsWith("绝佳")) return "今晚是一场值得出门的火烧云。";
+function verdictText(d, isDusk=true){
+  const idx = isDusk ? d.index : (d.srIndex||0);
+  const lv = level(idx);
+  const when = isDusk ? "今晚" : "明晨";
+  if(lv.t.startsWith("绝佳")) return when+"是一场值得出门的火烧云。";
   if(lv.t.startsWith("机会不错")) return "霞光可期，提前一小时到机位。";
   if(lv.t.startsWith("有戏")) return "有一点希望，值得蹲一蹲。";
   if(lv.t.startsWith("平淡")) return "多半平平，顺路看一眼即可。";
-  return "不建议特意为晚霞出门。";
+  return "不建议特意为"+(isDusk?"晚霞":"朝霞")+"出门。";
 }
-function verdictDetail(d){
+function verdictDetail(d, isDusk=true){
+  const idx = isDusk ? d.index : (d.srIndex||0);
+  const cloud = isDusk ? d.cloud : (d.srCloud!=null ? d.srCloud : d.cloud);
+  const hum = isDusk ? d.hum : (d.srHum!=null ? d.srHum : d.hum);
+  const vis = d.vis, wind = d.wind;
   let parts=[];
-  const cloud = d.cloud;
-  if(cloud<15) parts.push("天空太晴，缺少云层可被照亮");
+  if(cloud<15) parts.push(isDusk?"天空太晴，缺少云层可被照亮":"日出前太晴，缺少云层可被照亮");
   else if(cloud<30) parts.push("云量偏少，色彩可能不够浓烈");
   else if(cloud<=62) parts.push("云量恰到好处，是出彩霞的理想区间");
-  else if(cloud<=85) parts.push("云偏厚，落日可能被遮挡");
-  else parts.push("基本全阴，晚霞大概率落空");
-  if(d.hum>70) parts.push("湿度偏高，色彩易发灰");
-  if(d.vis<12) parts.push("能见度一般，通透度欠佳");
-  if(d.wind>35) parts.push("风力偏大，云层可能被吹散");
+  else if(cloud<=85) parts.push("云偏厚，日出/日落可能被遮挡");
+  else parts.push("基本全阴，"+(isDusk?"晚霞":"朝霞")+"大概率落空");
+  if(hum>70) parts.push("湿度偏高，色彩易发灰");
+  if(vis<12) parts.push("能见度一般，通透度欠佳");
+  if(wind>35) parts.push("风力偏大，云层可能被吹散");
   if(parts.length===0) parts.push("通透度高、云况配合，是出片的好天气");
   // 超级水晶天检测：AOD 极低 + 能见度极高（空气几乎无污染）
   const crystalClear = (d.aod!=null && !isNaN(d.aod) && d.aod<=0.08) && (d.vis!=null && d.vis>=40);
   if(crystalClear) parts.push("💎 超级水晶天：空气近乎无污染，通透度顶级");
-  return "今晚 " + parts.join("；") + "。";
+  return (isDusk?"今晚 ":"明晨 ") + parts.join("；") + "。";
 }
 
 /* ---- 签名元素：天色光谱 ---- */
@@ -1436,7 +1515,7 @@ function renderFactors(d){
       ? "云高适合度 "+sr.heightFit+"/100"+(d0.srCloudBaseEst?" · 露点差法实时估算":"")
       : (d0.srLow!=null && d0.srLow>0 ? "有低云但缺温度/露点，无法估算云高" : "无低云，无云底高度");
     const detailItems = [
-      {k:"晚霞鲜艳度", v:ss.finalVivid+" / 100", u:"", note:ss.finalVivid>75?"色彩预计饱和，出片概率高":ss.finalVivid>55?"有一定色彩，值得蹲":ss.finalVivid>35?"色彩平淡，参考性一般":"预计无色彩", s:ss.finalVivid},
+      {k:"晚霞鲜艳度", v:ss.finalVivid+" / 100", u:"", note:ss.finalVivid>75?"色彩预计饱和，出片把握大":ss.finalVivid>55?"有一定色彩，值得蹲":ss.finalVivid>35?"色彩平淡，参考性一般":"预计无色彩", s:ss.finalVivid},
       {k:"晚霞云量", v:(d0.cloud!=null?Math.round(d0.cloud):"--")+"%", u:"", note:"染色云（中+高）适合度 "+ss.cloudFit+"/100", s:ss.cloudFit},
       {k:"晚霞云高", v:cloudHStr, u:"", note:heightNote, s:ss.heightFit},
       {k:"晚霞三层占比", v:"低"+(d0.lowC!=null?Math.round(d0.lowC):"--")+"% 中"+(d0.midC!=null?Math.round(d0.midC):"--")+"% 高"+(d0.highC!=null?Math.round(d0.highC):"--")+"%", u:"", note:"染色云占比适合度 "+ss.layerFit+"/100", s:ss.layerFit}
@@ -1444,7 +1523,7 @@ function renderFactors(d){
     // 朝霞卡片（有日出数据才显示）
     if(sr){
       detailItems.push(
-        {k:"朝霞鲜艳度", v:sr.finalVivid+" / 100", u:"", note:sr.finalVivid>75?"色彩预计饱和，出片概率高":sr.finalVivid>55?"有一定色彩，值得蹲":sr.finalVivid>35?"色彩平淡，参考性一般":"预计无色彩", s:sr.finalVivid},
+        {k:"朝霞鲜艳度", v:sr.finalVivid+" / 100", u:"", note:sr.finalVivid>75?"色彩预计饱和，出片把握大":sr.finalVivid>55?"有一定色彩，值得蹲":sr.finalVivid>35?"色彩平淡，参考性一般":"预计无色彩", s:sr.finalVivid},
         {k:"朝霞云量", v:(d0.srCloud!=null?Math.round(d0.srCloud):"--")+"%", u:"", note:"染色云（中+高）适合度 "+sr.cloudFit+"/100", s:sr.cloudFit},
         {k:"朝霞云高", v:srCloudHStr, u:"", note:srHeightNote, s:sr.heightFit},
         {k:"朝霞三层占比", v:"低"+(d0.srLow!=null?Math.round(d0.srLow):"--")+"% 中"+(d0.srMid!=null?Math.round(d0.srMid):"--")+"% 高"+(d0.srHigh!=null?Math.round(d0.srHigh):"--")+"%", u:"", note:"染色云占比适合度 "+sr.layerFit+"/100", s:sr.layerFit}
@@ -1571,41 +1650,78 @@ function renderWeek(){
     const lv = level(d.index);
     const name = i===0 ? "今晚" : WEEK[d.date.getUTCDay()];
     const lvlCol = lv.t.startsWith("绝佳")?"var(--good)":lv.t.startsWith("机会")?"var(--gold)":lv.t.startsWith("有戏")?"var(--orange)":"var(--ink-3)";
-    return `<div class="day ${i===state.selDay?"on":""}" data-i="${i}">
-      <div class="dname" style="color:${i===0?"var(--orange)":"var(--ink)"}">${name}</div>
+    const isBest = state.bestDay===i;
+    return `<button type="button" class="day ${i===state.selDay?"on":""} ${isBest?"best":""}" data-i="${i}" aria-label="查看${d.date.getUTCMonth()+1}月${d.date.getUTCDate()}日预报，晚霞指数${d.index}，朝霞指数${d.srIndex!=null?d.srIndex:"--"}">
+      <div class="dname" style="color:${i===0?"var(--orange)":"var(--ink)"}">${name}${isBest?'<span class="best-tag">最佳</span>':''}</div>
       <div class="ddate">${d.date.getUTCMonth()+1}/${d.date.getUTCDate()}</div>
       <div class="dnum" style="color:${lvlCol}">${d.index}</div>
       <div class="dbar"><i style="width:${d.index}%"></i></div>
       <div class="dtime">日落 ${d.sunsetHM}</div>
       <div class="dsr">次晨 ${d.srIndex!=null?d.srIndex:"--"}${d.srIndex!=null?" 朝霞":""}</div>
-    </div>`;
+    </button>`;
   }).join("");
   els.week.querySelectorAll(".day").forEach(el=>{
     el.addEventListener("click", ()=>{ state.selDay = +el.dataset.i; renderHero(); renderWeek(); });
   });
+  // 自动标出本周最佳拍摄机会（晚霞指数最高且非今天）
+  let bestIdx = -1, bestDay = -1;
+  state.days.forEach((d,i)=>{ if(i>0 && d.index>bestIdx){ bestIdx=d.index; bestDay=i; } });
+  state.bestDay = bestDay;
+  if(bestDay>=0 && bestIdx>=60){
+    const bd = state.days[bestDay];
+    els.bestPick.style.display = "block";
+    els.bestPick.innerHTML = "🏆 本周最佳拍摄机会：<b>"+(bd.date.getUTCMonth()+1)+"月"+(bd.date.getUTCDate())+"日</b>（"+WEEK[bd.date.getUTCDay()]+"）晚霞指数 "+bestIdx+"，比今天"+((bd.index-state.days[0].index)>=0?"高":"低")+Math.abs(bd.index-state.days[0].index)+" 分。点击该天卡片可查看详情。";
+  }else{
+    els.bestPick.style.display = "none";
+  }
 }
 
 /* ================= 手动预估 ================= */
 function initManual(){
+  const snapshot = ()=>{
+    const d = state.days[state.selDay];
+    if(!d) return;
+    state.manualBase = {cloud:d.cloud, hum:d.hum, vis:d.vis, index:d.index};
+  };
   const apply = ()=>{
-    state.days[state.selDay].cloud = +els.slCloud.value;
-    state.days[state.selDay].hum = +els.slHum.value;
-    state.days[state.selDay].vis = +els.slVis.value;
-    state.days[state.selDay].index = computeIndex(
+    const d = state.days[state.selDay];
+    if(!d) return;
+    if(!state.manualBase) snapshot();
+    d.cloud = +els.slCloud.value;
+    d.hum = +els.slHum.value;
+    d.vis = +els.slVis.value;
+    d.index = computeIndex(
       +els.slCloud.value, +els.slHum.value, +els.slVis.value,
-      state.days[state.selDay].wind,
-      state.days[state.selDay].aod,
-      state.days[state.selDay].lowC);
+      d.wind, d.aod, d.lowC);
+    state.manualOn = true;
+    els.pmReset.style.display = "inline-block";
     renderHero();
+  };
+  const restore = ()=>{
+    const d = state.days[state.selDay];
+    if(!d || !state.manualBase) return;
+    d.cloud = state.manualBase.cloud;
+    d.hum = state.manualBase.hum;
+    d.vis = state.manualBase.vis;
+    d.index = state.manualBase.index;
+    state.manualOn = false;
+    state.manualBase = null;
+    els.pmReset.style.display = "none";
+    els.pmSliders.style.display = "none";
+    els.pmToggle.textContent = "展开";
+    syncManual(); renderHero();
+    showToast("已恢复原始预报值");
   };
   els.slCloud.addEventListener("input", ()=>{ els.outCloud.textContent = els.slCloud.value+"%"; apply(); });
   els.slHum.addEventListener("input", ()=>{ els.outHum.textContent = els.slHum.value+"%"; apply(); });
   els.slVis.addEventListener("input", ()=>{ els.outVis.textContent = els.slVis.value+"km"; apply(); });
   els.pmToggle.addEventListener("click", ()=>{
-    state.manualOn = !state.manualOn;
-    els.pmSliders.style.display = state.manualOn?"grid":"none";
-    els.pmToggle.textContent = state.manualOn?"收起":"展开";
+    const wasOn = els.pmSliders.style.display === "grid";
+    els.pmSliders.style.display = wasOn ? "none" : "grid";
+    els.pmToggle.textContent = wasOn ? "展开" : "收起";
+    if(!wasOn) snapshot();
   });
+  els.pmReset.addEventListener("click", restore);
 }
 
 /* ================= 地点与加载 ================= */
@@ -1713,11 +1829,14 @@ function autoLocateOnOpen(){
 }
 
 async function loadCity(city){
+  const mySeq = ++state._loadSeq;   // 竞态防护：只接受最新一次请求的结果
   state.city = city;
   state.selDay = 0;
   state.manualOn = false;
+  state.manualBase = null;
   els.pmSliders.style.display = "none";
   els.pmToggle.textContent = "展开";
+  els.pmReset.style.display = "none";
   els.loading.style.display = "flex";
   // 计算选择日期与今天的偏移天数
   const selDate = els.dateInput.value;
@@ -1727,10 +1846,14 @@ async function loadCity(city){
   const src = state.source;
   try{
     const w = await fetchWeather(city.lat, city.lon, state.model, src);
+    if(mySeq !== state._loadSeq) return;   // 已被更新的请求取代，丢弃本次结果
     state.days = buildDays(w);
     state.weatherOK = true;
+    state.isFallback = false;
   }catch(e){
+    if(mySeq !== state._loadSeq) return;
     state.weatherOK = false;
+    state.isFallback = true;
     state.days = buildDaysFallback(city);
     if(src==="windy"){
       showToast(getWindyKey()
@@ -1740,6 +1863,7 @@ async function loadCity(city){
       showToast("实时天气获取失败，已切换到手动预估模式");
     }
   }
+  if(mySeq !== state._loadSeq) return;
   els.loading.style.display = "none";
   renderSelect(); renderHero(); renderWeek(); syncManual(); updateWindyMap(); updateLeafletMap(); renderPredictionMap();
 }
@@ -1769,18 +1893,20 @@ function syncManual(){
 }
 
 function initLoc(){
-  // 日期选择器
+  // 日期选择器：用真正的日期运算生成上限（避免跨年非法日期）
   const today = new Date();
   const yyyy = today.getFullYear(), mm = String(today.getMonth()+1).padStart(2,'0'), dd = String(today.getDate()).padStart(2,'0');
   els.dateInput.value = yyyy+"-"+mm+"-"+dd;
   els.dateInput.min = yyyy+"-"+mm+"-"+dd;
-  els.dateInput.max = yyyy+"-"+String(today.getMonth()+3).padStart(2,'0')+"-"+dd;
+  const maxDate = new Date(today.getFullYear(), today.getMonth()+3, today.getDate());
+  els.dateInput.max = maxDate.getFullYear()+"-"+String(maxDate.getMonth()+1).padStart(2,'0')+"-"+String(maxDate.getDate()).padStart(2,'0');
   els.dateInput.addEventListener("change", ()=>{
     // 重新加载当前城市，用选择的日期
     if(state.city) loadCity(state.city);
   });
   els.todayBtn.addEventListener("click", ()=>{
-    els.dateInput.value = yyyy+"-"+mm+"-"+dd;
+    const t = new Date();
+    els.dateInput.value = t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,'0')+"-"+String(t.getDate()).padStart(2,'0');
     if(state.city) loadCity(state.city);
   });
 
@@ -2460,6 +2586,10 @@ function getVividColor(v){
   return "#f0e8f0";
 }
 
+/* ---- 全国程度图数据缓存：按有效时间刷新，避免每次切换城市重复拉取 ---- */
+let predMapCache = null;   // {ts, grid, LATS, LONS, cityIdx, geo}
+const PRED_MAP_TTL = 10*60*1000;   // 10 分钟有效
+
 async function renderPredictionMap(){
   // 全国火烧云程度预测图：canvas 直接渲染（中国轮廓 + 鲜艳度热力 + 省会指数），无需交互地图
   const cv = document.getElementById("predCanvas");
@@ -2467,15 +2597,19 @@ async function renderPredictionMap(){
   if(!cv){ return; }
   if(els.regionalNote) els.regionalNote.textContent = "正在获取全国云况…";
   try{
-    // 1) 加载中国省界 GeoJSON（阿里 DataV 全国边界）
+    // 1) 加载中国省界 GeoJSON（阿里 DataV 全国边界）—— 缓存复用
     let geo = null;
-    try{
-      const ac = new AbortController();
-      const t = setTimeout(()=>ac.abort(), 12000);
-      const r = await fetch("https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json", {signal: ac.signal});
-      clearTimeout(t);
-      if(r.ok) geo = await r.json();
-    }catch(e){}
+    if(predMapCache && Date.now()-predMapCache.ts < PRED_MAP_TTL){
+      geo = predMapCache.geo;
+    }else{
+      try{
+        const ac = new AbortController();
+        const t = setTimeout(()=>ac.abort(), 12000);
+        const r = await fetch("https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json", {signal: ac.signal});
+        clearTimeout(t);
+        if(r.ok) geo = await r.json();
+      }catch(e){}
+    }
     // 2) 批量获取：全国 4° 网格实时云量 + 城市指数
     //    Open-Meteo 支持逗号分隔多坐标（一次请求最多 ~60 点），把原先 192 个单点并发
     //    压缩为 4 个批量请求，手机网络下不再超时/被限流
@@ -2484,7 +2618,7 @@ async function renderPredictionMap(){
     for(let lo=73; lo<=133; lo+=4) LONS.push(lo);
     const grid = {};      // grid[key] = {vivid, cloud}
     const cityIdx = {};   // 城市保底指数
-    // 组装全部点位（网格 + 城市）
+    const batches = [];   // 组装全部点位（网格 + 城市）
     const allPts = [];
     LATS.forEach(la=>{ LONS.forEach(lo=>{ allPts.push({la, lo, key: la+","+lo}); }); });
     REGIONAL_CITIES.forEach(c=>{ allPts.push({la:c.lat, lo:c.lon, key:"c_"+c.name, city:c}); });
@@ -2512,8 +2646,15 @@ async function renderPredictionMap(){
         return Array.isArray(arr) ? arr : null;
       }catch(e){ clearTimeout(t); return null; }
     };
+    // 命中缓存：直接用缓存的网格数据重绘（省去 4 个批量请求）
+    if(predMapCache && Date.now()-predMapCache.ts < PRED_MAP_TTL){
+      drawCloudCanvas(document.getElementById("predCloudCanvas"), predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo);
+      drawPredictionCanvas(cv, predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo, predMapCache.cityIdx);
+      if(tag) tag.textContent = "程度图 · 实时云况（缓存 "+(predMapCache.ts>0?Math.round((Date.now()-predMapCache.ts)/60000):0)+" 分钟前）";
+      if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 实时云况";
+      return;
+    }
     // 顺序分批发（每批失败重试一次）
-    const batches = [];
     for(let i=0; i<allPts.length; i+=BATCH) batches.push(allPts.slice(i, i+BATCH));
     for(let bi=0; bi<batches.length; bi++){
       let arr = await fetchBatch(batches[bi]);
@@ -2544,7 +2685,8 @@ async function renderPredictionMap(){
         if(!grid[key]) grid[key] = cityIdx[nm];
       });
     }
-    // 3) 绘制两张图：实时云量图（白=云）+ 程度图（热力+城市指数）
+    // 3) 写入缓存 + 绘制两张图：实时云量图（白=云）+ 程度图（热力+城市指数）
+    predMapCache = {ts:Date.now(), grid, LATS, LONS, cityIdx, geo};
     const cloudCv = document.getElementById("predCloudCanvas");
     drawCloudCanvas(cloudCv, grid, LATS, LONS, geo);
     drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx);
@@ -2888,6 +3030,33 @@ function initModel(){
   });
 }
 
+/* ---- 朝霞/晚霞切换 + 高级设置折叠 ---- */
+function initViewSwitch(){
+  document.querySelectorAll("#typeSwitch .type-tab").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      if(state.viewType===b.dataset.t) return;
+      state.viewType = b.dataset.t;
+      renderHero();
+    });
+  });
+  // 点击次盘也能切换主盘
+  if(els.gaugeSide){
+    els.gaugeSide.addEventListener("click", ()=>{
+      state.viewType = state.viewType==="dusk" ? "dawn" : "dusk";
+      renderHero();
+    });
+  }
+}
+function initAdvPanel(){
+  els.advBtn.addEventListener("click", ()=>{
+    const open = els.advPanel.style.display !== "block";
+    els.advPanel.style.display = open ? "block" : "none";
+    els.advBtn.classList.toggle("open", open);
+    els.advBtn.setAttribute("aria-expanded", open?"true":"false");
+    els.advBtn.textContent = open ? "高级设置 ▴" : "高级设置 ▾";
+  });
+}
+
 /* ================= 启动 ================= */
 (function init(){
   // 打开网站自动定位：优先恢复上次定位（7 天内），否则尝试 GPS；都不行则默认城市
@@ -2899,6 +3068,8 @@ function initModel(){
   initKey();
   initLoc();
   initSat();
+  initViewSwitch();
+  initAdvPanel();
   loadCity(state.city);
   // 定时刷新倒计时
   setInterval(()=>{ if(state.days.length) renderHero(); }, 30000);
