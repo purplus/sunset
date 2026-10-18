@@ -235,20 +235,23 @@
     .sliders{grid-template-columns:1fr}
     .times{grid-template-columns:1fr 1fr}
     .hero{padding:20px}
-    .hero-body{flex-direction:column;gap:16px}
+    .hero-body{flex-direction:column;gap:16px;align-items:center}
     .gauges-row{width:100%;justify-content:center}
+    .hero-main{width:100%;min-width:0}
   }
   @media (max-width:480px){
     .week{grid-template-columns:repeat(3,1fr)}
     .hero-body{gap:14px}
-    .gauge{width:130px;height:130px}
-    .gauge .num{font-size:44px}
-    .gauge .denom{font-size:12px}
-    .gauges-row{gap:12px}
+    .gauge{width:120px;height:120px}
+    .gauge .num{font-size:40px}
+    .gauge .denom{font-size:11px}
+    .gauge .lvl{font-size:10px;padding:3px 8px;white-space:nowrap}
+    .gauges-row{gap:10px}
     .times{gap:8px}
-    .tcard{padding:10px}
-    .tcard .k{font-size:11px}
-    .tcard .v{font-size:18px}
+    .tcard{padding:9px 10px}
+    .tcard .k{font-size:10px}
+    .tcard .v{font-size:16px}
+    .tcard .s{font-size:10px}
     .keypanel input{width:150px}
   }
 </style>
@@ -614,11 +617,11 @@ function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC){
   return Math.round(base + penalty);
 }
 function level(index){
-  if(index<35) return {t:"一般，不建议特意蹲守", c:"var(--bad)"};
+  if(index<35) return {t:"一般", c:"var(--bad)"};
   if(index<55) return {t:"平淡，顺路可看", c:"var(--warn)"};
-  if(index<70) return {t:"有戏，值得提前蹲点", c:"var(--orange)"};
-  if(index<82) return {t:"机会不错，火烧云概率高", c:"var(--gold)"};
-  return {t:"绝佳，大概率出大片", c:"var(--good)"};
+  if(index<70) return {t:"有戏，值得蹲点", c:"var(--orange)"};
+  if(index<82) return {t:"机会不错，概率高", c:"var(--gold)"};
+  return {t:"绝佳，大概率出片", c:"var(--good)"};
 }
 
 /* ================= 全局状态 ================= */
@@ -680,6 +683,8 @@ async function fetchOpenMeteo(lat, lon, model){
   ]);
   if(!res.ok) throw new Error("open-meteo fetch failed "+res.status);
   const w = await res.json();
+  // 实时海拔：Open-Meteo 返回 elevation（米）
+  if(w.elevation!=null) state.city.elev = w.elevation;
   // 把 AOD 按小时对齐合并进来
   if(aodRes.ok){
     const aq = await aodRes.json();
@@ -1272,23 +1277,40 @@ function renderFactors(d){
       </div>`).join("");
   }
 
-  // 云层距离分析（巧摄原理 + 海拔修正）
+  // 云层距离分析（巧摄原理 + 实时海拔 + 实时云高）
   if(d0 && els.cloudDistanceBox){
     const R = 6371; // 地球半径 km
-    const hObs = (state.city.elev || 0) / 1000; // 观测点海拔 km
-    const cloudH = d0.cloudBase != null ? d0.cloudBase/1000 : 3; // 云高 km，默认3km
+    const hObs = (state.city.elev || 0) / 1000; // 观测点海拔 km（实时）
+    // 实时云高：优先真实 cloud_base；无低云时按云量分布估算主发光云层高度
+    let cloudH, cloudHSrc;
+    if(d0.cloudBase != null && !isNaN(d0.cloudBase)){
+      cloudH = d0.cloudBase/1000;
+      cloudHSrc = "实时云底高度";
+    } else {
+      // 无低云：根据中云/高云云量加权估算（中云典型 3km，高云典型 7km）
+      const midW = (d0.midC||0)/100, highW = (d0.highC||0)/100;
+      const total = midW + highW;
+      cloudH = total>0 ? (midW*3 + highW*7)/total : 3;
+      cloudHSrc = total>0 ? "按中/高云云量估算" : "无低云且无中高云（晴天）";
+    }
     // 近距：地平线云距离（云刚好出现在地平线上）
     const dNear = Math.sqrt(2 * R * (cloudH + hObs));
     // 远距：最远无云距离（太阳高度角约 -7.5°，光线还能照亮云）
     const sunAngle = 7.5; // 度
     const dFar = dNear + cloudH / Math.tan(sunAngle * Math.PI / 180);
+    // 光线遮挡判断：低云多说明近处云多（可能遮挡），中云/高云是染色层
+    const blockRisk = (d0.lowC!=null && d0.lowC>55) ? "⚠ 低云偏多，近距内光线可能被遮挡" : (d0.lowC!=null && d0.lowC>25) ? "低云中等，需关注近距云况" : "低云少，近距光线通畅";
     els.cloudDistanceBox.innerHTML = `
-      <div style="color:var(--ink-2);margin-bottom:8px">观测点海拔：${Math.round(hObs*1000)} m · 云高：${Math.round(cloudH*1000)} m</div>
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+        <div style="color:var(--ink-2)">观测点海拔：<b style="color:#fff">${Math.round(hObs*1000)} m</b> <span style="color:var(--ink-3);font-size:11px">（实时）</span></div>
+        <div style="color:var(--ink-2)">云高：<b style="color:#fff">${(cloudH*1000).toFixed(0)} m</b> <span style="color:var(--ink-3);font-size:11px">${cloudHSrc}</span></div>
+      </div>
       <div style="color:#ffcc44;font-weight:bold">近距（地平线云距离）：${Math.round(dNear)} km</div>
       <div style="color:var(--ink-3);font-size:12px;margin-bottom:6px">→ 这个距离以内最好有云，会被低角度阳光照亮变红</div>
       <div style="color:#ff6b6b;font-weight:bold">远距（最远无云距离）：${Math.round(dFar)} km</div>
       <div style="color:var(--ink-3);font-size:12px;margin-bottom:6px">→ ${Math.round(dNear)} km 到 ${Math.round(dFar)} km 之间必须无云，否则遮挡光线</div>
-      <div style="color:var(--ink-2);font-size:12px">太阳高度角：约 -${sunAngle}° · 海拔越高，地平线越远，能看到的火烧云范围越大</div>
+      <div style="color:${d0.lowC>55?'#ff6b6b':'var(--ink-2)'};font-size:12px;margin-top:4px">${blockRisk}</div>
+      <div style="color:var(--ink-3);font-size:11px;margin-top:6px">海拔来自实时地形数据 · 云高随所选日期的预报实时变化</div>
     `;
   }
 }
