@@ -1040,7 +1040,7 @@ function renderHero(){
 
   // 朝霞指数圆
   const srIdx = d.srIndex || 0;
-  const srLv = levelOf(srIdx);
+  const srLv = level(srIdx);
   els.indexNumSR.textContent = srIdx;
   els.indexLvlSR.textContent = srLv.t;
   els.indexLvlSR.style.color = srLv.c;
