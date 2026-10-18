@@ -1602,8 +1602,40 @@ async function locateByCoords(lat, lon, tag){
   const city = {n:placeName, lat, lon, tz:tz||28800, elev};
   state.elevation = elev;
   await loadCity(city);
+  // 记住本次定位，下次打开直接使用
+  try{ localStorage.setItem("sunset_last_loc", JSON.stringify({lat, lon, name:placeName, tz:tz||28800, elev, ts:Date.now()})); }catch(e){}
   showToast((tag||"已定位")+"："+placeName+(elev?(" · 海拔"+Math.round(elev)+"m"):""));
   return placeName;
+}
+
+/* ---- 打开网站时自动定位 ---- */
+function autoLocateOnOpen(){
+  // 1) 有上次定位记录（7 天内有效）→ 直接替换默认城市，由 init 统一加载，避免弹权限框
+  try{
+    const saved = localStorage.getItem("sunset_last_loc");
+    if(saved){
+      const s = JSON.parse(saved);
+      const age = Date.now() - (s.ts||0);
+      if(s.lat!=null && s.lon!=null && age < 7*86400000){
+        state.city = {n:s.name||"我的位置", lat:s.lat, lon:s.lon, tz:s.tz||28800, elev:s.elev||null};
+        state.elevation = state.city.elev;
+        setTimeout(()=>showToast("已使用上次定位："+(s.name||"我的位置")), 1200);
+        return;
+      }
+    }
+  }catch(e){}
+  // 2) 无记录 → 尝试 GPS 定位（失败静默，不影响默认城市）
+  if(!navigator.geolocation) return;
+  try{
+    navigator.geolocation.getCurrentPosition(
+      pos=>{
+        const {latitude, longitude} = pos.coords;
+        locateByCoords(latitude, longitude, "已自动定位").catch(()=>{});
+      },
+      ()=>{ /* 用户拒绝或失败：保持默认城市 */ },
+      {timeout:12000, maximumAge:600000, enableHighAccuracy:false}
+    );
+  }catch(e){}
 }
 
 async function loadCity(city){
@@ -1939,25 +1971,46 @@ function getVividColor(v){
 }
 
 async function renderRegionalMap(){
-  if(typeof L === "undefined") return;
+  if(typeof L === "undefined"){
+    // CDN 兜底：本地 leaflet.js 加载失败时动态注入
+    try{
+      await new Promise((ok,no)=>{
+        const s = document.createElement("script");
+        s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+        s.onload = ok; s.onerror = no;
+        document.head.appendChild(s);
+      });
+      if(!document.querySelector("link[href*='leaflet.css']")){
+        const l = document.createElement("link");
+        l.rel = "stylesheet"; l.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+        document.head.appendChild(l);
+      }
+    }catch(e){ 
+      if(els.regionalNote) els.regionalNote.textContent = "地图组件加载失败";
+      return;
+    }
+  }
   if(els.regionalNote) els.regionalNote.textContent = "正在加载全国数据…";
   try{
     if(!regionalMap){
       const el = document.getElementById("regionalMap");
       if(!el || el.clientHeight===0) return;
       regionalMap = L.map("regionalMap", {zoomControl: true}).setView([35, 106], 4);
-      // 底图组：Esri 全球卫星影像（稳定，无需 key）+ OSM 街道地形；高德作为备选
-      const satLayer = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-        attribution: "© Esri, Maxar, Earthstar Geographics", maxZoom: 18
-      });
-      const terrainLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        subdomains: "abc", attribution: "© OpenStreetMap", maxZoom: 18
+      // 底图组：默认高德卫星（国内稳定）+ 高德地形；Esri 卫星 / OSM 街道作为备选
+      const gaodeSat = L.tileLayer("https://webst0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=6&x={x}&y={y}&z={z}", {
+        subdomains: ["1","2","3","4"], attribution: "© 高德卫星", maxZoom: 18
       });
       const gaodeLayer = L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {
         subdomains: ["1","2","3","4"], attribution: "© 高德地图", maxZoom: 18
       });
-      satLayer.addTo(regionalMap);
-      L.control.layers({"🛰 卫星影像": satLayer, "🗺 街道地形": terrainLayer, "🗺 高德地形": gaodeLayer}, {}, {position: "topleft", collapsed: true}).addTo(regionalMap);
+      const esriSat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+        attribution: "© Esri, Maxar, Earthstar Geographics", maxZoom: 18
+      });
+      const osmLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        subdomains: "abc", attribution: "© OpenStreetMap", maxZoom: 18
+      });
+      gaodeSat.addTo(regionalMap);
+      L.control.layers({"🛰 高德卫星": gaodeSat, "🗺 高德地形": gaodeLayer, "🌍 Esri 卫星": esriSat, "🗺 OSM 街道": osmLayer}, {}, {position: "topleft", collapsed: true}).addTo(regionalMap);
     }
     // 清除旧圆圈（保留底图与控制层）
     const toRemove = [];
@@ -1965,16 +2018,17 @@ async function renderRegionalMap(){
       if(l instanceof L.CircleMarker || l instanceof L.Tooltip || l instanceof L.Marker) toRemove.push(l);
     });
     toRemove.forEach(l=>regionalMap.removeLayer(l));
-    // 并行获取各城市鲜艳度（限并发，避免触发限流）
+    // 并行获取各城市鲜艳度（8 路并发，实时更新进度）
     const results = new Array(REGIONAL_CITIES.length);
-    const workers = Array.from({length:6}, (_,wi)=> (async ()=>{
-      for(let i=wi; i<REGIONAL_CITIES.length; i+=6){
+    let doneCount = 0;
+    const workers = Array.from({length:8}, (_,wi)=> (async ()=>{
+      for(let i=wi; i<REGIONAL_CITIES.length; i+=8){
         const city = REGIONAL_CITIES[i];
         try{
           const url = "https://api.open-meteo.com/v1/forecast?latitude="+city.lat+"&longitude="+city.lon
             + "&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=auto";
           const ac = new AbortController();
-          const t = setTimeout(()=>ac.abort(), 10000);
+          const t = setTimeout(()=>ac.abort(), 12000);
           const res = await fetch(url, {signal: ac.signal});
           clearTimeout(t);
           if(!res.ok) continue;
@@ -1989,6 +2043,8 @@ async function renderRegionalMap(){
           const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
           results[i] = {city, vivid};
         }catch(e){}
+        doneCount++;
+        if(els.regionalNote && doneCount%4===0) els.regionalNote.textContent = "加载中… " + doneCount + "/" + REGIONAL_CITIES.length;
       }
     }));
     await Promise.all(workers);
@@ -2013,7 +2069,11 @@ async function renderRegionalMap(){
         className: "sun-dir-tooltip"
       });
     });
-    if(els.regionalNote) els.regionalNote.textContent = "已加载 " + okCount + "/" + REGIONAL_CITIES.length + " 城 · 取各城日落 18:00 云况";
+    if(okCount===0){
+      if(els.regionalNote) els.regionalNote.textContent = "数据获取失败（网络/CORS），可稍后刷新重试";
+    } else {
+      if(els.regionalNote) els.regionalNote.textContent = "已加载 " + okCount + "/" + REGIONAL_CITIES.length + " 城 · 取各城日落 18:00 云况";
+    }
   }catch(e){
     console.error("regional map err:", e);
     if(els.regionalNote) els.regionalNote.textContent = "分布图加载失败，请刷新重试";
@@ -2041,6 +2101,8 @@ function initModel(){
 
 /* ================= 启动 ================= */
 (function init(){
+  // 打开网站自动定位：优先恢复上次定位（7 天内），否则尝试 GPS；都不行则默认城市
+  autoLocateOnOpen();
   renderSelect();
   initManual();
   initModel();
