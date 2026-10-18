@@ -382,8 +382,11 @@
   </div>
 
   <div class="section">
-    <div class="section-h"><h2>全国火烧云程度</h2><span class="tag" id="regionalNote">省会城市 · 直辖市 · 卫星底图</span></div>
-    <div id="regionalMap" style="width:100%;height:450px;border-radius:12px;background:#1a2240"></div>
+    <div class="section-h"><h2>全国火烧云程度</h2><span class="tag" id="regionalNote">省会城市 · 直辖市 · 实时云况</span></div>
+    <div style="position:relative;width:100%;background:#151c36;border-radius:12px;overflow:hidden">
+      <canvas id="predCanvas" style="display:block;width:100%;height:auto"></canvas>
+      <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px" id="predCanvasTag">正在生成预测图…</div>
+    </div>
     <div class="legend-bar">
       <span style="background:#f0e8f0">不烧 &lt;10</span>
       <span style="background:#e8d0e0">微烧 10-25</span>
@@ -1679,7 +1682,7 @@ async function loadCity(city){
     }
   }
   els.loading.style.display = "none";
-  renderSelect(); renderHero(); renderWeek(); syncManual(); updateWindyMap(); updateLeafletMap(); renderRegionalMap();
+  renderSelect(); renderHero(); renderWeek(); syncManual(); updateWindyMap(); updateLeafletMap(); renderPredictionMap();
 }
 
 function buildDaysFallback(city){
@@ -1982,195 +1985,215 @@ function getVividColor(v){
   return "#f0e8f0";
 }
 
-async function renderRegionalMap(){
-  if(typeof L === "undefined"){
-    // CDN 兜底：本地 leaflet.js 加载失败时动态注入
+async function renderPredictionMap(){
+  // 全国火烧云程度预测图：canvas 直接渲染（中国轮廓 + 鲜艳度热力 + 省会指数），无需交互地图
+  const cv = document.getElementById("predCanvas");
+  const tag = document.getElementById("predCanvasTag");
+  if(!cv){ return; }
+  if(els.regionalNote) els.regionalNote.textContent = "正在获取全国云况…";
+  try{
+    // 1) 加载中国省界 GeoJSON（阿里 DataV 全国边界）
+    let geo = null;
     try{
-      await new Promise((ok,no)=>{
-        const s = document.createElement("script");
-        s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-        s.onload = ok; s.onerror = no;
-        document.head.appendChild(s);
-      });
-      if(!document.querySelector("link[href*='leaflet.css']")){
-        const l = document.createElement("link");
-        l.rel = "stylesheet"; l.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-        document.head.appendChild(l);
-      }
-    }catch(e){ 
-      if(els.regionalNote) els.regionalNote.textContent = "地图组件加载失败";
-      return;
-    }
-  }
-  if(els.regionalNote) els.regionalNote.textContent = "正在加载全国数据…";
-  try{
-    if(!regionalMap){
-      const el = document.getElementById("regionalMap");
-      if(!el || el.clientHeight===0) return;
-      regionalMap = L.map("regionalMap", {zoomControl: true}).setView([35, 106], 4);
-      // 底图组：默认高德卫星（国内稳定）+ 高德地形；Esri 卫星 / OSM 街道作为备选
-      const gaodeSat = L.tileLayer("https://webst0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=6&x={x}&y={y}&z={z}", {
-        subdomains: ["1","2","3","4"], attribution: "© 高德卫星", maxZoom: 18
-      });
-      const gaodeLayer = L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {
-        subdomains: ["1","2","3","4"], attribution: "© 高德地图", maxZoom: 18
-      });
-      const esriSat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-        attribution: "© Esri, Maxar, Earthstar Geographics", maxZoom: 18
-      });
-      const osmLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        subdomains: "abc", attribution: "© OpenStreetMap", maxZoom: 18
-      });
-      gaodeSat.addTo(regionalMap);
-      L.control.layers({"🛰 高德卫星": gaodeSat, "🗺 高德地形": gaodeLayer, "🌍 Esri 卫星": esriSat, "🗺 OSM 街道": osmLayer}, {}, {position: "topleft", collapsed: true}).addTo(regionalMap);
-    }
-    // 清除旧圆圈（保留底图与控制层）
-    const toRemove = [];
-    regionalMap.eachLayer(l=>{
-      if(l instanceof L.CircleMarker || l instanceof L.Tooltip || l instanceof L.Marker) toRemove.push(l);
-    });
-    toRemove.forEach(l=>regionalMap.removeLayer(l));
-    // 并行获取各城市鲜艳度（8 路并发，实时更新进度）
-    const results = new Array(REGIONAL_CITIES.length);
-    let doneCount = 0;
-    const workers = Array.from({length:8}, (_,wi)=> (async ()=>{
-      for(let i=wi; i<REGIONAL_CITIES.length; i+=8){
-        const city = REGIONAL_CITIES[i];
-        try{
-          const url = "https://api.open-meteo.com/v1/forecast?latitude="+city.lat+"&longitude="+city.lon
-            + "&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=auto";
-          const ac = new AbortController();
-          const t = setTimeout(()=>ac.abort(), 12000);
-          const res = await fetch(url, {signal: ac.signal});
-          clearTimeout(t);
-          if(!res.ok) continue;
-          const w = await res.json();
-          const h = w.hourly;
-          if(!h || !h.time) continue;
-          const idx = h.time.findIndex(x=>x.includes("T18:00"));
-          if(idx < 0) continue;
-          const lowC = h.cloud_cover_low && h.cloud_cover_low[idx]!=null ? h.cloud_cover_low[idx] : 0;
-          const midC = h.cloud_cover_mid && h.cloud_cover_mid[idx]!=null ? h.cloud_cover_mid[idx] : 0;
-          const highC = h.cloud_cover_high && h.cloud_cover_high[idx]!=null ? h.cloud_cover_high[idx] : 0;
-          const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
-          results[i] = {city, vivid};
-        }catch(e){}
-        doneCount++;
-        if(els.regionalNote && doneCount%4===0) els.regionalNote.textContent = "加载中… " + doneCount + "/" + REGIONAL_CITIES.length;
-      }
-    }));
-    await Promise.all(workers);
-    // 画圆圈
-    let okCount = 0;
-    results.forEach(r=>{
-      if(!r) return;
-      okCount++;
-      const {city, vivid} = r;
-      const color = getVividColor(vivid);
-      const circle = L.circleMarker([city.lat, city.lon], {
-        radius: 12,
-        fillColor: color,
-        color: "#fff",
-        weight: 2,
-        opacity: 0.9,
-        fillOpacity: 0.85
-      }).addTo(regionalMap);
-      circle.bindTooltip(city.name + " " + vivid + "%", {
-        permanent: true,
-        direction: "center",
-        className: "sun-dir-tooltip"
-      });
-    });
-    if(okCount===0){
-      if(els.regionalNote) els.regionalNote.textContent = "数据获取失败（网络/CORS），可稍后刷新重试";
-    } else {
-      if(els.regionalNote) els.regionalNote.textContent = "已加载 " + okCount + "/" + REGIONAL_CITIES.length + " 城 · 取各城日落 18:00 云况";
-    }
-    // ---- 实时云量覆盖层：全国 3° 网格当前云量 → canvas 平滑插值 → 半透明云图叠加 ----
-    renderCloudOverlay();
-  }catch(e){
-    console.error("regional map err:", e);
-    if(els.regionalNote) els.regionalNote.textContent = "分布图加载失败，请刷新重试";
-  }
-}
-
-/* ---- 实时云量覆盖层（Open-Meteo 网格云量 + canvas 插值，模拟卫星云图效果） ---- */
-async function renderCloudOverlay(){
-  try{
-    if(!regionalMap) return;
-    if(els.regionalNote) els.regionalNote.textContent = "正在获取实时云量…";
-    // 中国区域网格：纬度 18~54，经度 73~135，步长 3°（约 13×21=273 点，8 路并发）
-    const LATS = [], LONS = [];
+      const ac = new AbortController();
+      const t = setTimeout(()=>ac.abort(), 12000);
+      const r = await fetch("https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json", {signal: ac.signal});
+      clearTimeout(t);
+      if(r.ok) geo = await r.json();
+    }catch(e){}
+    // 2) 全国 3° 网格实时分层云量 → 鲜艳度（8 路并发）
+    const LATS=[], LONS=[];
     for(let la=18; la<=54; la+=3) LATS.push(la);
     for(let lo=73; lo<=135; lo+=3) LONS.push(lo);
     const grid = {};
-    let done = 0, total = LATS.length*LONS.length;
+    let done=0, total=LATS.length*LONS.length;
     const workers = Array.from({length:8}, (_,wi)=> (async ()=>{
       for(let i=wi; i<total; i+=8){
         const la = LATS[Math.floor(i/LONS.length)], lo = LONS[i%LONS.length];
         try{
           const ac = new AbortController();
           const t = setTimeout(()=>ac.abort(), 12000);
-          const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+la+"&longitude="+lo+"&current=cloud_cover&forecast_days=1&timezone=auto", {signal: ac.signal});
+          const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+la+"&longitude="+lo
+            + "&current=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=1&timezone=auto", {signal: ac.signal});
           clearTimeout(t);
           if(res.ok){
             const w = await res.json();
-            const cc = w.current && w.current.cloud_cover;
-            if(cc!=null) grid[la+","+lo] = cc;
+            const c = w.current || {};
+            const lowC = c.cloud_cover_low!=null?c.cloud_cover_low:0;
+            const midC = c.cloud_cover_mid!=null?c.cloud_cover_mid:0;
+            const highC = c.cloud_cover_high!=null?c.cloud_cover_high:0;
+            // 与城市指数一致：染色云(中+高)主导，低云削弱
+            const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
+            grid[la+","+lo] = vivid;
           }
         }catch(e){}
         done++;
-        if(els.regionalNote && done%16===0) els.regionalNote.textContent = "获取实时云量… " + Math.round(done/total*100) + "%";
+        if(tag && done%16===0) tag.textContent = "生成中… " + Math.round(done/total*100) + "%";
       }
     }));
     await Promise.all(workers);
-    if(Object.keys(grid).length < 20){
-      if(els.regionalNote) els.regionalNote.textContent = "云量数据不足，仅显示城市指数";
+    if(Object.keys(grid).length < 30){
+      if(tag) tag.textContent = "云况数据不足，请刷新重试";
+      if(els.regionalNote) els.regionalNote.textContent = "数据获取失败，请刷新重试";
       return;
     }
-    // canvas 插值：白=云量100% 透明=0%，平滑过渡
-    const W = 480, H = Math.round(W*(36/62));
-    const cv = document.createElement("canvas");
-    cv.width = W; cv.height = H;
-    const ctx = cv.getContext("2d");
-    const img = ctx.createImageData(W, H);
-    const interp = (la, lo)=>{
-      // 双线性插值最近 4 网格点
-      let i1=0; while(i1<LATS.length-1 && LATS[i1+1]<=la) i1++;
-      let j1=0; while(j1<LONS.length-1 && LONS[j1+1]<=lo) j1++;
-      const la0=LATS[i1], la1=LATS[i1+1], lo0=LONS[j1], lo1=LONS[j1+1];
-      const v00=grid[la0+","+lo0], v10=grid[la1+","+lo0], v01=grid[la0+","+lo1], v11=grid[la1+","+lo1];
-      if(v00==null&&v10==null&&v01==null&&v11==null) return null;
-      const f = (la-la0)/(la1-la0||1), g = (lo-lo0)/(lo1-lo0||1);
-      const top = (v00!=null?v00:50)*(1-g) + (v01!=null?v01:50)*g;
-      const bot = (v10!=null?v10:50)*(1-g) + (v11!=null?v11:50)*g;
-      return top*(1-f) + bot*f;
-    };
-    for(let y=0; y<H; y++){
-      const la = 54 - (y+0.5)/H*36; // 上北下南
-      for(let x=0; x<W; x++){
-        const lo = 73 + (x+0.5)/W*62;
-        const cc = interp(la, lo);
-        const i = (y*W+x)*4;
-        if(cc==null){ img.data[i+3]=0; continue; }
-        // 云量越大越白亮
-        const a = Math.max(0, Math.min(1, cc/100)) * 0.75;
-        img.data[i]=235; img.data[i+1]=238; img.data[i+2]=242; img.data[i+3]=Math.round(a*255);
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    const url = cv.toDataURL("image/png");
-    // 清除旧覆盖层
-    if(window.__cloudOverlay){
-      regionalMap.removeLayer(window.__cloudOverlay);
-      window.__cloudOverlay = null;
-    }
-    window.__cloudOverlay = L.imageOverlay(url, [[18,73],[54,135]], {opacity:0.85, interactive:false}).addTo(regionalMap);
-    if(els.regionalNote) els.regionalNote.textContent = "城市指数已加载 · 实时云量叠加中（白色=有云）";
+    // 3) 绘制预测图
+    drawPredictionCanvas(cv, grid, LATS, LONS, geo);
+    if(tag) tag.textContent = "全国火烧云程度预测图 · 实时云况";
+    if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 实时云况";
   }catch(e){
-    console.error("cloud overlay err:", e);
+    console.error("pred map err:", e);
+    if(tag) tag.textContent = "生成失败，请刷新重试";
   }
 }
+
+/* ---- 用 canvas 绘制中国区域火烧云鲜艳度热力图 ---- */
+function drawPredictionCanvas(cv, grid, LATS, LONS, geo){
+  // 尺寸：中国范围 lat 18~54, lon 73~135
+  const BOUNDS = {la0:3, la1:54, lo0:73, lo1:135};
+  const W = 900, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
+  const dpr = window.devicePixelRatio||1;
+  cv.width = W*dpr; cv.height = H*dpr;
+  cv.style.aspectRatio = W+"/"+H;
+  const ctx = cv.getContext("2d");
+  ctx.scale(dpr, dpr);
+  // 背景
+  ctx.fillStyle = "#151c36";
+  ctx.fillRect(0, 0, W, H);
+  const px = lo => (lo - BOUNDS.lo0) / (BOUNDS.lo1 - BOUNDS.lo0) * W;
+  const py = la => (BOUNDS.la1 - la) / (BOUNDS.la1 - BOUNDS.la0) * H;
+  // 云量网格 → 双线性插值
+  const interp = (la, lo)=>{
+    let i1=0; while(i1<LATS.length-1 && LATS[i1+1]<=la) i1++;
+    let j1=0; while(j1<LONS.length-1 && LONS[j1+1]<=lo) j1++;
+    const la0=LATS[i1], la1=LATS[i1+1], lo0=LONS[j1], lo1=LONS[j1+1];
+    const v00=grid[la0+","+lo0], v10=grid[la1+","+lo0], v01=grid[la0+","+lo1], v11=grid[la1+","+lo1];
+    if(v00==null&&v10==null&&v01==null&&v11==null) return null;
+    const f=(la-la0)/(la1-la0||1), g=(lo-lo0)/(lo1-lo0||1);
+    const top=(v00!=null?v00:50)*(1-g)+(v01!=null?v01:50)*g;
+    const bot=(v10!=null?v10:50)*(1-g)+(v11!=null?v11:50)*g;
+    return top*(1-f)+bot*f;
+  };
+  // 鲜艳度 → 颜色（越红越强）
+  const vividColor = v=>{
+    if(v==null) return "rgba(0,0,0,0)";
+    const t = Math.max(0, Math.min(100, v))/100;
+    // 低→透明紫灰，中→橙，高→亮红
+    const r = 120 + 120*t, g = 60 + 60*(1-t), b = 110 - 90*t;
+    const a = 0.10 + 0.62*t;
+    return "rgba("+Math.round(r)+","+Math.round(g)+","+Math.round(b)+","+a.toFixed(3)+")";
+  };
+  // 绘制热力（先整图，再用中国轮廓 mask 裁剪）
+  if(geo){
+    // 先绘制省界多边形为不透明白底，作为 mask
+    const mask = document.createElement("canvas");
+    mask.width = W*dpr; mask.height = H*dpr;
+    const mctx = mask.getContext("2d");
+    mctx.scale(dpr, dpr);
+    mctx.fillStyle = "#fff";
+    const drawGeo = c2=>{
+      c2.beginPath();
+      (geo.features||[]).forEach(f=>{
+        const g = f.geometry;
+        if(!g) return;
+        const polys = g.type==="Polygon" ? [g.coordinates] : (g.type==="MultiPolygon" ? g.coordinates : []);
+        polys.forEach(poly=>{
+          poly.forEach(ring=>{
+            ring.forEach((pt, k)=>{
+              const x = px(pt[0]), y = py(pt[1]);
+              if(k===0) c2.moveTo(x, y); else c2.lineTo(x, y);
+            });
+            c2.closePath();
+          });
+        });
+      });
+    };
+    drawGeo(mctx);
+    mctx.fill("evenodd");
+    // 热力画在主 canvas
+    const STEP = 6;
+    for(let yy=0; yy<H; yy+=STEP){
+      const la = BOUNDS.la1 - (yy+STEP/2)/H*(BOUNDS.la1-BOUNDS.la0);
+      for(let xx=0; xx<W; xx+=STEP){
+        const lo = BOUNDS.lo0 + (xx+STEP/2)/W*(BOUNDS.lo1-BOUNDS.lo0);
+        const v = interp(la, lo);
+        if(v==null) continue;
+        ctx.fillStyle = vividColor(v);
+        ctx.fillRect(xx, yy, STEP, STEP);
+      }
+    }
+    // 用 mask 裁剪：只保留中国区域内
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(mask, 0, 0, W, H);
+    ctx.restore();
+    // 重绘省界线
+    ctx.strokeStyle = "rgba(255,255,255,0.28)";
+    ctx.lineWidth = 0.8;
+    const drawLines = c2=>{
+      c2.beginPath();
+      (geo.features||[]).forEach(f=>{
+        const g = f.geometry;
+        if(!g) return;
+        const polys = g.type==="Polygon" ? [g.coordinates] : (g.type==="MultiPolygon" ? g.coordinates : []);
+        polys.forEach(poly=>{
+          poly.forEach(ring=>{
+            ring.forEach((pt, k)=>{
+              const x = px(pt[0]), y = py(pt[1]);
+              if(k===0) c2.moveTo(x, y); else c2.lineTo(x, y);
+            });
+            c2.closePath();
+          });
+        });
+      });
+    };
+    drawLines(ctx);
+    ctx.stroke();
+  } else {
+    // 无 GeoJSON：直接画热力 + 简化边框
+    const STEP = 6;
+    for(let yy=0; yy<H; yy+=STEP){
+      const la = BOUNDS.la1 - (yy+STEP/2)/H*(BOUNDS.la1-BOUNDS.la0);
+      for(let xx=0; xx<W; xx+=STEP){
+        const lo = BOUNDS.lo0 + (xx+STEP/2)/W*(BOUNDS.lo1-BOUNDS.lo0);
+        const v = interp(la, lo);
+        if(v==null) continue;
+        ctx.fillStyle = vividColor(v);
+        ctx.fillRect(xx, yy, STEP, STEP);
+      }
+    }
+    ctx.strokeStyle = "rgba(255,255,255,0.4)";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(0, 0, W, H);
+  }
+  // 城市圆点 + 指数
+  REGIONAL_CITIES.forEach(c=>{
+    const x = px(c.lon), y = py(c.lat);
+    // 获取该城真实指数（网格插值）
+    const v = interp(c.lat, c.lon);
+    if(v==null) return;
+    ctx.beginPath();
+    ctx.arc(x, y, 7, 0, Math.PI*2);
+    ctx.fillStyle = vividColor(v).replace(/[^,]+\)$/, "1)");
+    ctx.fill();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.font = "600 13px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(c.name, x, y - 11);
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fillText(v + "%", x, y + 19);
+  });
+  // 南海诸岛小图（简化标注）
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.textAlign = "right";
+  ctx.fillText("南海诸岛", W-8, H-6);
+}
+
 
 /* ================= 气象模型切换 ================= */
 const MODEL_NOTE = {
