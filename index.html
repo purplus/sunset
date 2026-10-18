@@ -368,7 +368,12 @@
   </div>
 
   <div class="section">
-    <div class="section-h"><h2>鲜艳度分布地图</h2><span class="tag">地形底图 · 城市火烧云鲜艳度</span></div>
+    <div class="section-h"><h2>云层距离分析</h2><span class="tag">巧摄原理 · 海拔修正</span></div>
+    <div id="cloudDistanceBox" style="background:var(--panel);border-radius:12px;padding:16px;font-size:13px;line-height:1.8"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-h"><h2>今日鲜艳度分布</h2><span class="tag">中国主要城市 · 朝霞/晚霞</span></div>
     <div id="regionalMap" style="width:100%;height:450px;border-radius:12px;background:#1a2240"></div>
     <div class="legend-bar">
       <span style="background:#f0e8f0">不烧 &lt;10</span>
@@ -632,7 +637,7 @@ const els = {
   tSunriseIdx:$("tSunriseIdx"), tSunriseTime:$("tSunriseTime"),
   tSunrise:$("tSunrise"), tGoldenSR:$("tGoldenSR"), tBlueSR:$("tBlueSR"),
   skyGrad:$("skyGrad"), sunMarker:$("sunMarker"), skyHud:$("skyHud"),
-  factors:$("factors"), detailForecast:$("detailForecast"), week:$("week"),
+  factors:$("factors"), detailForecast:$("detailForecast"), cloudDistanceBox:$("cloudDistanceBox"), week:$("week"),
   pmToggle:$("pmToggle"), pmSliders:$("pmSliders"),
   slCloud:$("slCloud"), slHum:$("slHum"), slVis:$("slVis"),
   outCloud:$("outCloud"), outHum:$("outHum"), outVis:$("outVis"),
@@ -1256,6 +1261,26 @@ function renderFactors(d){
         <div class="bar"><i style="width:${it.s}%"></i></div>
         <div class="fnote">${it.note}</div>
       </div>`).join("");
+  }
+
+  // 云层距离分析（巧摄原理 + 海拔修正）
+  if(d0 && els.cloudDistanceBox){
+    const R = 6371; // 地球半径 km
+    const hObs = (state.city.elev || 0) / 1000; // 观测点海拔 km
+    const cloudH = d0.cloudBase != null ? d0.cloudBase/1000 : 3; // 云高 km，默认3km
+    // 近距：地平线云距离（云刚好出现在地平线上）
+    const dNear = Math.sqrt(2 * R * (cloudH + hObs));
+    // 远距：最远无云距离（太阳高度角约 -7.5°，光线还能照亮云）
+    const sunAngle = 7.5; // 度
+    const dFar = dNear + cloudH / Math.tan(sunAngle * Math.PI / 180);
+    els.cloudDistanceBox.innerHTML = `
+      <div style="color:var(--ink-2);margin-bottom:8px">观测点海拔：${Math.round(hObs*1000)} m · 云高：${Math.round(cloudH*1000)} m</div>
+      <div style="color:#ffcc44;font-weight:bold">近距（地平线云距离）：${Math.round(dNear)} km</div>
+      <div style="color:var(--ink-3);font-size:12px;margin-bottom:6px">→ 这个距离以内最好有云，会被低角度阳光照亮变红</div>
+      <div style="color:#ff6b6b;font-weight:bold">远距（最远无云距离）：${Math.round(dFar)} km</div>
+      <div style="color:var(--ink-3);font-size:12px;margin-bottom:6px">→ ${Math.round(dNear)} km 到 ${Math.round(dFar)} km 之间必须无云，否则遮挡光线</div>
+      <div style="color:var(--ink-2);font-size:12px">太阳高度角：约 -${sunAngle}° · 海拔越高，地平线越远，能看到的火烧云范围越大</div>
+    `;
   }
 }
 function iconFor(k){
