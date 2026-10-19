@@ -872,10 +872,21 @@ function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, dirBlock, p
   const sLow = scoreCloudLow(lowC);
   const sMid = scoreCloudMid(midC);
   const sHigh = scoreCloudHigh(highC);
-  // 权重：中云40% + 高云30% + 低云遮挡20% + AOD10%
-  let base = sMid*0.40 + sHigh*0.30 + sLow*0.20 + scoreAOD(aod)*0.10;
-  // 低云遮挡惩罚：低云>55% 扣 15 分
-  let penalty = (lowC!=null && lowC>55) ? -15 : 0;
+  // 【低云遮蔽系数】低云是物理遮挡层：低云厚时，中高云"画布"被挡在云顶之上、从地面不可见，
+  // 画布得分必须按可见度打折——低云>85%视为完全遮蔽，画布分归零。
+  // 修复"南京雨天低云100%仍得45分"：低云全阴时中高云数值再高也是云顶之上的云，无法被夕阳照亮
+  const sh = (lowC==null||isNaN(lowC)) ? 1
+    : (lowC<=30 ? 1 : lowC<=55 ? 0.8 : lowC<=70 ? 0.5 : lowC<=85 ? 0.15 : 0);
+  // 权重：中云40% + 高云30% + 低云遮挡20% + AOD10%；画布部分先乘遮蔽系数
+  const canvas = (sMid*0.40 + sHigh*0.30) * sh;
+  let base = canvas + sLow*0.20 + scoreAOD(aod)*0.10;
+  // 低云遮挡惩罚：低云厚=阳光和视线都被挡，>55% 扣 15，>70% 扣 20，>85% 全遮扣 25
+  let penalty = 0;
+  if(lowC!=null && !isNaN(lowC)){
+    if(lowC>85) penalty = -25;
+    else if(lowC>70) penalty = -20;
+    else if(lowC>55) penalty = -15;
+  }
   // 染色云门控：中云+高云是火烧云的"画布"，太少则没有东西可被照亮
   // （无云时低云"通畅"得100分是误导，必须整体压分）
   // 注意：undefined 也算缺失（undefined==null 为 true），缺失一律按 0 处理并触发门控
