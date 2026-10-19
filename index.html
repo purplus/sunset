@@ -2881,9 +2881,24 @@ function mercRowLat(H, B, yy, STEP){
 let predLeaflet = null, predCloudLeaflet = null;
 let predOv = null, predCloudOv = null;
 let predMapInit = false;
-function predBaseLayer(mode){
-  if(mode==="sat") return L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {attribution:"影像 © Esri", maxZoom:18});
-  return L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {subdomains:["1","2","3","4"], attribution:"© 高德地图", maxZoom:18});
+// 高德卫星影像（国内 CDN 稳定直连）；Esri 境外源在国内常超时 → 弃用
+function predBaseLayer(mode, map){
+  if(mode==="sat") return L.tileLayer("https://webst0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=6&x={x}&y={y}&z={z}", {subdomains:["1","2","3","4"], attribution:"影像 © 高德", maxZoom:18, tileerrorGuard:"sat"});
+  return L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {subdomains:["1","2","3","4"], attribution:"© 高德地图", maxZoom:18, tileerrorGuard:"street"});
+}
+// 瓦片加载失败自动降级：连续失败 ≥4 张 → 切到高德街道（最稳），避免整片黑图
+function guardTileErrors(map){
+  let fails = 0;
+  map.on("tileerror", (ev)=>{
+    fails++;
+    if(fails >= 4){
+      fails = 0;
+      const wrap = (map === predLeaflet) ? "#predBaseSwitch" : "#cloudBaseSwitch";
+      const btn = document.querySelector(wrap + " button[data-base='street']");
+      if(btn) btn.click();
+    }
+  });
+  map.on("tileload", ()=>{ fails = 0; });
 }
 function initPredLeaflets(){
   if(typeof L === "undefined" || predMapInit) return;
@@ -2894,6 +2909,8 @@ function initPredLeaflets(){
     predCloudLeaflet = L.map("predCloudLeaflet", {zoomControl:true}).setView([30,104], 4);
     predBaseLayer("sat").addTo(predLeaflet);
     predBaseLayer("sat").addTo(predCloudLeaflet);
+    guardTileErrors(predLeaflet);
+    guardTileErrors(predCloudLeaflet);
     // 两图缩放/平移同步（防循环）
     const syncPair = (src, dst)=>{
       src.on("zoomend", ()=>{
@@ -2919,7 +2936,9 @@ function initPredLeaflets(){
           btn.classList.add("on");
           const map = mapVar==="predLeaflet" ? predLeaflet : predCloudLeaflet;
           map.eachLayer(l=>{ if(l instanceof L.TileLayer) map.removeLayer(l); });
-          predBaseLayer(btn.dataset.base).addTo(map);
+          const layer = predBaseLayer(btn.dataset.base);
+          layer.addTo(map);
+          guardTileErrors(map);
         });
       });
     });
