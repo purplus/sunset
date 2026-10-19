@@ -717,7 +717,7 @@ function sunDirBlock(lat, lon, azDeg, grid, LATS, LONS){
 }
 function dirBlockText(b, isDusk){
   const dir = isDusk ? "日落" : "日出";
-  if(b==null) return {t:"方向遮挡 --", c:"var(--ink-3)"};
+  if(b==null) return {t: dir+"方向遮挡 评估中…", c:"var(--ink-3)"};
   if(b<30)  return {t: dir+"方向开阔", c:"var(--good)"};
   if(b<50)  return {t: dir+"方向轻微遮挡", c:"var(--warn)"};
   if(b<70)  return {t: dir+"方向明显遮挡，阳光减弱", c:"var(--orange)"};
@@ -729,6 +729,28 @@ function dirBlockPenalty(b){
   if(b>=50) return -10;
   if(b>=30) return -4;
   return 0;
+}
+// 降水惩罚：日落/日出时段正在下雨 → 天空是雨云而非彩霞，必须强压分
+// p 为时段最大小时降水量(mm/h)；null(无数据)不惩罚
+function precipPenalty(p){
+  if(p==null || isNaN(p)) return 0;
+  if(p >= 10) return -30;   // 大雨，直接压到"一般"档以下
+  if(p >= 3)  return -20;   // 中雨
+  if(p >= 1)  return -12;   // 小雨
+  if(p >= 0.1)return -6;    // 零星降水
+  return 0;
+}
+// 取小时数组在基准下标 i 前后 1 小时窗口内的最大降水量（与彩霞指数同口径时段）
+function maxPrecipAround(arr, i){
+  if(!arr || !Array.isArray(arr)) return null;
+  if(i < 0) return null;
+  let m = 0, any = false;
+  for(let k=i-1; k<=i+1; k++){
+    if(k<0 || k>=arr.length || arr[k]==null) continue;
+    any = true;
+    if(arr[k] > m) m = arr[k];
+  }
+  return any ? m : null;
 }
 function scoreCloudLow(lowC){
   // 低云：遮挡光线，越少越好
@@ -758,7 +780,7 @@ function scoreCloudHigh(highC){
   if(highC < 80) return 100;   // 较多高云
   return 70;                    // 很多高云
 }
-function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, dirBlock){
+function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, dirBlock, precip){
   // 照搬 sunsetbot 算法：中云主体 + 高云染红 + 低云遮挡 + AOD适中
   const sLow = scoreCloudLow(lowC);
   const sMid = scoreCloudMid(midC);
@@ -786,8 +808,21 @@ function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, dirBlock){
   }
   // 太阳光线方向遮挡（巧摄理念）：日落/日出方位方向被云挡住时，阳光照不过来 → 扣分
   const dirPen = dirBlockPenalty(dirBlock);
+  // 降水惩罚：时段正在下雨 → 天空是雨云不是彩霞，强压分
+  const rainPen = precipPenalty(precip);
+  let raw = Math.round(base + penalty + dyePenalty + thinCirrus + dirPen + rainPen);
+  // 降水上限截断：只要时段有降水（雨云压顶），指数不允许落在高档
+  // 否则"好云况+小雨"仍会显示高分，与"下雨=没彩霞"的直觉冲突
+  if(precip!=null && !isNaN(precip)){
+    let cap = 100;
+    if(precip >= 10) cap = 15;
+    else if(precip >= 5) cap = 25;
+    else if(precip >= 1) cap = 40;
+    else if(precip >= 0.1) cap = 50;
+    if(raw > cap) raw = cap;
+  }
   // 下限保护：极端条件（低 base + 多项惩罚）可能为负，负数无意义 → clamp 到 0
-  return Math.max(0, Math.round(base + penalty + dyePenalty + thinCirrus + dirPen));
+  return Math.max(0, raw);
 }
 function level(index){
   if(index<35) return {t:"一般", c:"var(--bad)"};
@@ -850,7 +885,7 @@ async function fetchOpenMeteo(lat, lon, model){
   const days = 3 + offset;
   let url = "https://api.open-meteo.com/v1/forecast"
     + "?latitude="+lat+"&longitude="+lon
-    + "&hourly=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,cloud_base,relative_humidity_2m,wind_speed_10m,visibility,temperature_2m,dew_point_2m"
+    + "&hourly=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,cloud_base,relative_humidity_2m,wind_speed_10m,visibility,temperature_2m,dew_point_2m,precipitation"
     + "&daily=sunrise,sunset"
     + "&forecast_days="+days+"&timezone=auto";
   if(model==="gfs") url += "&models=gfs_global";
@@ -1164,15 +1199,18 @@ function buildDays(weather){
     const srbInfo = estCloudBase(rawSrb, srLow, srTemp, srDew);
     const srCloudBase = srbInfo.cb;
     const srCloudBaseEst = srbInfo.est;
-    const index = computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC);
-    const indexSR = idxSR>=0 ? computeIndex(srCloud, srHum, srVis, srWind, srAOD, srLow, srMid, srHigh) : null;
+    // 降水：日落/日出时段前后 1 小时的最大小时降水量（mm/h）；下雨=雨云，必须压分
+    const precip = maxPrecipAround(hourly.precipitation, idx);
+    const srPrecip = maxPrecipAround(hourly.precipitation, idxSR);
+    const index = computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, null, precip);
+    const indexSR = idxSR>=0 ? computeIndex(srCloud, srHum, srVis, srWind, srAOD, srLow, srMid, srHigh, null, srPrecip) : null;
     // 海拔修正：高海拔视野开阔加分（>1000m +3，>2000m +5）
     const elev = state.city.elev;
     const elevBonus = elev!=null ? (elev>=2000?5:elev>=1000?3:0) : 0;
     const finalIdx = Math.min(100, index + elevBonus);
     const finalIdxSR = indexSR!=null ? Math.min(100, indexSR + elevBonus) : null;
     const cloudCurve = perDayHourly(hourly, dateStr, "cloud_cover");
-    days.push({date, dateStr, sunsetHM, sunriseHM, cloud, hum, vis, wind, temp, lowC, midC, highC, cloudBase, cloudBaseEst, aod, index:finalIdx,
+    days.push({date, dateStr, sunsetHM, sunriseHM, cloud, hum, vis, wind, temp, lowC, midC, highC, cloudBase, cloudBaseEst, aod, precip, srPrecip, index:finalIdx,
       srCloud, srLow, srMid, srHigh, srAOD, srVis, srWind, srHum, srCloudBase, srCloudBaseEst, srIndex: finalIdxSR,
       goldenStart: hmFromMinutes(sunsetHM, -60), blueStart: hmFromMinutes(sunsetHM, 20),
       goldenEnd: sunsetHM, blueEnd: hmFromMinutes(sunsetHM, 50),
@@ -1376,6 +1414,10 @@ function verdictText(d, isDusk=true){
   const idx = isDusk ? d.index : (d.srIndex||0);
   const lv = level(idx);
   const when = isDusk ? "今晚" : "明晨";
+  // 降水是硬信号：正在下雨 = 雨云压场，彩霞不成立
+  const p = isDusk ? d.precip : d.srPrecip;
+  if(p!=null && p >= 1) return when+"时段有降水，彩霞大概率落空。";
+  if(p!=null && p >= 0.1) return when+"时段有零星降水，出片希望很小。";
   if(lv.t.startsWith("绝佳")) return when+"是一场值得出门的火烧云。";
   if(lv.t.startsWith("机会不错")) return "霞光可期，提前一小时到机位。";
   if(lv.t.startsWith("有戏")) return "有一点希望，值得蹲一蹲。";
@@ -1396,6 +1438,9 @@ function verdictDetail(d, isDusk=true){
   if(hum>70) parts.push("湿度偏高，色彩易发灰");
   if(vis<12) parts.push("能见度一般，通透度欠佳");
   if(wind>35) parts.push("风力偏大，云层可能被吹散");
+  const p = isDusk ? d.precip : d.srPrecip;
+  if(p!=null && p >= 1) parts.push("时段有降水，雨云压场");
+  else if(p!=null && p >= 0.1) parts.push("时段有零星降水");
   if(parts.length===0) parts.push("通透度高、云况配合，是出片的好天气");
   // 超级水晶天检测：AOD 极低 + 能见度极高（空气几乎无污染）
   const crystalClear = (d.aod!=null && !isNaN(d.aod) && d.aod<=0.08) && (d.vis!=null && d.vis>=40);
@@ -2401,21 +2446,31 @@ async function buildSatCloudGrid(){
   return out;
 }
 
-// 卫星网格就绪后重算方向遮挡：替换模型网格 → 指数/文案/光路云量全部用卫星数据
+// 方向遮挡"最终一次性渲染"：等卫星云量网格（35s 超时），成功用卫星、失败/超时用模型，
+// 然后只渲染一次——避免 预报→模型→卫星 阶段指数/遮挡反复跳变。
+// 注意：模型阶段的 applySunDirBlock 已用 skipRender 只算不渲染。
+const SUN_DIR_TIMEOUT_MS = 35000;
+let sunDirFinalSeq = 0;      // 防竞态：多次触发只允许最新一次渲染
 async function refreshSunDirWithSat(){
   if(!predMapCache || !state.city || !state.days || !state.days[0]) return;
-  const sat = await buildSatCloudGrid();
-  if(!sat) { satDirGrid = null; return; }
+  const seq = ++sunDirFinalSeq;
+  const sat = await Promise.race([
+    buildSatCloudGrid(),
+    new Promise(res=>setTimeout(()=>res(null), SUN_DIR_TIMEOUT_MS))
+  ]);
+  if(seq !== sunDirFinalSeq) return;      // 已有更新的触发，丢弃本次
   if(!state.city || !state.days || !state.days[0]) return;
-  satDirGrid = sat;
-  applySunDirBlock(sat);
-  // 重绘程度图（光路采样点改用卫星云量标注）+ 刷新指数/遮挡文案
-  const cv = document.getElementById("predCanvas");
-  if(cv && predMapCache){
-    drawPredictionCanvas(cv, predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo, predMapCache.cityIdx);
+  if(sat && sat.grid && sat.grid._sat){
+    satDirGrid = sat;
+    applySunDirBlock(sat, false);         // 卫星网格：重算方向遮挡+指数并渲染一次
+    const cv = document.getElementById("predCanvas");
+    if(cv && predMapCache){
+      drawPredictionCanvas(cv, predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo, predMapCache.cityIdx);
+    }
+  }else{
+    satDirGrid = null;
+    applySunDirBlock(null, false);        // 降级：模型网格值渲染（保证遮挡有数据，不空等）
   }
-  renderHero();
-  renderWeek();
 }
 
 // 绘制卫星实况云图
@@ -2892,7 +2947,7 @@ async function renderPredictionMap(){
       drawPredictionCanvas(cv, predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo, predMapCache.cityIdx);
       if(tag) tag.textContent = "程度图 · 实时云况（与彩霞指数同口径，缓存 "+(predMapCache.ts>0?Math.round((Date.now()-predMapCache.ts)/60000):0)+" 分钟前）";
       if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 实时云况";
-      applySunDirBlock();
+      applySunDirBlock(null, true);
       refreshSunDirWithSat();   // 卫星云量网格就绪后自动升级光路判断
       return;
     }
@@ -2948,7 +3003,7 @@ async function renderPredictionMap(){
     if(tag) tag.textContent = "程度图 · 实时云况（与彩霞指数同口径）";
     if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 实时云况";
     // 云况网格就绪后：评估太阳光线方向遮挡（巧摄理念），并入今日指数
-    applySunDirBlock();
+    applySunDirBlock(null, true);
     refreshSunDirWithSat();   // 卫星云量网格就绪后自动升级光路判断
   }catch(e){
     console.error("pred map err:", e);
@@ -2959,7 +3014,9 @@ async function renderPredictionMap(){
 // 用实时云况网格评估"今日"日落/日出方向遮挡（巧摄理念：太阳方位被云挡住 → 阳光照不过来）
 // 只对今日生效（未来天无实时网格可评估）；手动调整模式下只展示遮挡、不改指数
 // src 可选：卫星云量网格（{grid,LATS,LONS}）；缺省用 Open-Meteo 4° 模型网格
-function applySunDirBlock(src){
+// skipRender=true 时只更新数据不渲染（配合 refreshSunDirWithSat 的"最终一次性渲染"，
+// 避免指数/遮挡在 预报→模型→卫星 阶段反复跳变）
+function applySunDirBlock(src, skipRender){
   const g = src || predMapCache;
   if(!g || !state.city || !state.days || !state.days[0]) return;
   const d = state.days[0];
@@ -2975,13 +3032,15 @@ function applySunDirBlock(src){
   const elev = state.city.elev;
   const elevBonus = elev!=null ? (elev>=2000?5:elev>=1000?3:0) : 0;
   if(!state.manualOn){
-    d.index = Math.min(100, computeIndex(d.cloud, d.hum, d.vis, d.wind, d.aod, d.lowC, d.midC, d.highC, blkSet) + elevBonus);
+    d.index = Math.min(100, computeIndex(d.cloud, d.hum, d.vis, d.wind, d.aod, d.lowC, d.midC, d.highC, blkSet, d.precip) + elevBonus);
     if(d.srIndex != null){
-      d.srIndex = Math.min(100, computeIndex(d.srCloud, d.srHum, d.srVis, d.srWind, d.srAOD, d.srLow, d.srMid, d.srHigh, blkRise) + elevBonus);
+      d.srIndex = Math.min(100, computeIndex(d.srCloud, d.srHum, d.srVis, d.srWind, d.srAOD, d.srLow, d.srMid, d.srHigh, blkRise, d.srPrecip) + elevBonus);
     }
   }
-  renderHero();
-  renderWeek();
+  if(!skipRender){
+    renderHero();
+    renderWeek();
+  }
 }
 
 /* ---- 实时云量图：白色=有云，透明=无云（canvas 插值渲染） ---- */
