@@ -54,6 +54,8 @@
   .live-weather .lw-item{white-space:nowrap}
   .live-weather .lw-main{font-size:14px;font-weight:600;color:var(--ink-1)}
   .live-weather .lw-time{color:var(--ink-3);font-size:11px}
+  .expired-note{margin-top:8px;font-size:12px;color:var(--ink-3);background:rgba(255,255,255,.04);border:1px dashed rgba(255,255,255,.15);border-radius:10px;padding:6px 10px;line-height:1.5}
+  .expired-note b{color:#ffb84d;font-weight:600}
 
   .loc{display:flex;align-items:center;gap:8px}
   .loc-box{position:relative}
@@ -373,7 +375,7 @@
             <circle class="arc" id="gaugeArc" cx="95" cy="95" r="75"></circle>
           </svg>
           <div class="center"><div class="num" id="indexNum">--</div></div>
-          <div class="gauge-label"><div class="denom">晚霞指数 / 100</div><div class="lvl" id="indexLvl"></div></div>
+          <div class="gauge-label"><div class="denom">晚霞指数 / 100</div><div class="lvl" id="indexLvl"></div><div class="expired-note" id="indexExpired"></div></div>
         </div>
         <div class="gauge" id="gaugeSide" data-t="dawn">
           <svg viewBox="0 0 190 190">
@@ -757,6 +759,17 @@ function maxPrecipAround(arr, i){
   }
   return any ? m : null;
 }
+// 白天雨日整体上限：当天白天（00:00~23:59）已下过中雨及以上（≥3mm/h）时，
+// 即使日落时段预报雨停，雨后云层厚、湿度高、能见度低，浓烈彩霞的机会也大打折扣——
+// 指数封顶"平淡"档(45)；白天大暴雨(≥10mm/h)封顶 35（不建议出门）。
+// 日落时段本身有降水时已由 precipPenalty/上限截断处理，此处不重复压分
+function rainDayCap(idx, dayMaxPrecip, duskPrecip){
+  if(dayMaxPrecip==null || idx==null || isNaN(idx)) return idx;
+  if(duskPrecip!=null && duskPrecip >= 0.1) return idx; // 时段降水已压，避免双惩罚
+  if(dayMaxPrecip >= 10) return Math.min(idx, 35);
+  if(dayMaxPrecip >= 3)  return Math.min(idx, 45);
+  return idx;
+}
 // WMO weathercode → 中文天气现象 + emoji（实况显示用）
 function weatherCodeText(code){
   if(code==null) return {t:"未知", e:""};
@@ -922,7 +935,7 @@ const els = {
   citySel:$("citySel"), liveWeather:$("liveWeather"), locBtn:$("locBtn"), loading:$("loading"),
   dateInput:$("dateInput"), todayBtn:$("todayBtn"),
   modelNote:$("modelNote"), cloudChart:$("cloudChart"), chartNote:$("chartNote"),
-  heroDate:$("heroDate"), indexNum:$("indexNum"), indexLvl:$("indexLvl"), indexNumSR:$("indexNumSR"), indexLvlSR:$("indexLvlSR"),
+  heroDate:$("heroDate"), indexNum:$("indexNum"), indexLvl:$("indexLvl"), indexExpired:$("indexExpired"), indexNumSR:$("indexNumSR"), indexLvlSR:$("indexLvlSR"),
   gaugeArc:$("gaugeArc"), gaugeArcSR:$("gaugeArcSR"), dirBlockBar:$("dirBlockBar"), verdict:$("verdict"), verdictDetail:$("verdictDetail"),
   tSunset:$("tSunset"), tGolden:$("tGolden"), tBlue:$("tBlue"),
   tSunriseIdx:$("tSunriseIdx"), tSunriseTime:$("tSunriseTime"),
@@ -1270,15 +1283,26 @@ function buildDays(weather){
     // 降水：日落/日出时段前后 1 小时的最大小时降水量（mm/h）；下雨=雨云，必须压分
     const precip = maxPrecipAround(hourly.precipitation, idx);
     const srPrecip = maxPrecipAround(hourly.precipitation, idxSR);
+    // 白天雨日轨迹：当日 00:00~23:59 最大小时降水（区分"日落时段降水"与"白天已下过的雨"）。
+    // 用户视角"今天下雨"往往指全天；傍晚即使预报雨停，白天的大雨也已让云层厚、湿度高、能见度低
+    let dayMaxP = 0, dayMaxTime = null;
+    if(hourly.time && hourly.precipitation){
+      for(let k=0; k<hourly.time.length; k++){
+        if(!hourly.time[k].startsWith(dateStr)) continue;
+        const v = hourly.precipitation[k];
+        if(v!=null && v > dayMaxP){ dayMaxP = v; const m = /T(\d{2}):/.exec(hourly.time[k]); if(m) dayMaxTime = m[1]+"时"; }
+      }
+    }
+    const dayMaxPrecip = dayMaxP>0 ? dayMaxP : null;
     const index = computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, null, precip);
     const indexSR = idxSR>=0 ? computeIndex(srCloud, srHum, srVis, srWind, srAOD, srLow, srMid, srHigh, null, srPrecip) : null;
     // 海拔修正：高海拔视野开阔加分（>1000m +3，>2000m +5）
     const elev = state.city.elev;
     const elevBonus = elev!=null ? (elev>=2000?5:elev>=1000?3:0) : 0;
-    const finalIdx = Math.min(100, index + elevBonus);
-    const finalIdxSR = indexSR!=null ? Math.min(100, indexSR + elevBonus) : null;
+    const finalIdx = rainDayCap(Math.min(100, index + elevBonus), dayMaxPrecip, precip);
+    const finalIdxSR = indexSR!=null ? rainDayCap(Math.min(100, indexSR + elevBonus), dayMaxPrecip, srPrecip) : null;
     const cloudCurve = perDayHourly(hourly, dateStr, "cloud_cover");
-    days.push({date, dateStr, sunsetHM, sunriseHM, cloud, hum, vis, wind, temp, lowC, midC, highC, cloudBase, cloudBaseEst, aod, precip, srPrecip, index:finalIdx,
+    days.push({date, dateStr, sunsetHM, sunriseHM, cloud, hum, vis, wind, temp, lowC, midC, highC, cloudBase, cloudBaseEst, aod, precip, srPrecip, dayMaxPrecip, dayMaxPrecipTime: dayMaxTime, index:finalIdx,
       srCloud, srLow, srMid, srHigh, srAOD, srVis, srWind, srHum, srCloudBase, srCloudBaseEst, srIndex: finalIdxSR,
       goldenStart: hmFromMinutes(sunsetHM, -60), blueStart: hmFromMinutes(sunsetHM, 20),
       goldenEnd: sunsetHM, blueEnd: hmFromMinutes(sunsetHM, 50),
@@ -1400,6 +1424,21 @@ function renderHero(){
   els.indexLvl.style.color = duskLv.c;
   els.indexLvl.style.background = duskLv.c+"1f";
   els.indexLvl.style.border = "1px solid "+duskLv.c+"55";
+  // 今日晚霞已过提示：当前本地时间已过日落，指数盘标注"已过"，避免把历史评分当成当前天气
+  if(els.indexExpired){
+    if(isToday && isDusk && d.sunsetHM){
+      const nowLocal = new Date(Date.now()+tz*1000);
+      const nowMin = nowLocal.getUTCHours()*60+nowLocal.getUTCMinutes();
+      const sunsetMin = toMinutes(d.sunsetHM);
+      if(nowMin > sunsetMin){
+        els.indexExpired.innerHTML = "今日晚霞已过（"+d.sunsetHM+"），<b>看明日</b>预报";
+      } else {
+        els.indexExpired.innerHTML = "";
+      }
+    } else {
+      els.indexExpired.innerHTML = "";
+    }
+  }
   const circ = 2*Math.PI*75;
   els.gaugeArc.style.strokeDasharray = circ.toFixed(1);
   els.gaugeArc.style.strokeDashoffset = (circ*(1 - duskIdx/100)).toFixed(1);
@@ -1486,6 +1525,9 @@ function verdictText(d, isDusk=true){
   const p = isDusk ? d.precip : d.srPrecip;
   if(p!=null && p >= 1) return when+"时段有降水，彩霞大概率落空。";
   if(p!=null && p >= 0.1) return when+"时段有零星降水，出片希望很小。";
+  // 白天已下中雨及以上（时段预报雨停）：雨日整体压低，主文案直接说明
+  if(d.dayMaxPrecip!=null && d.dayMaxPrecip >= 3 && (p==null || p < 0.1) && idx <= 55)
+    return "今天白天有中到大雨，雨后云厚湿重，"+(isDusk?"晚霞":"朝霞")+"机会低。";
   if(lv.t.startsWith("绝佳")) return when+"是一场值得出门的火烧云。";
   if(lv.t.startsWith("机会不错")) return "霞光可期，提前一小时到机位。";
   if(lv.t.startsWith("有戏")) return "有一点希望，值得蹲一蹲。";
@@ -1509,6 +1551,10 @@ function verdictDetail(d, isDusk=true){
   const p = isDusk ? d.precip : d.srPrecip;
   if(p!=null && p >= 1) parts.push("时段有降水，雨云压场");
   else if(p!=null && p >= 0.1) parts.push("时段有零星降水");
+  // 白天已下过雨 → 整体影响提示（区分"日落时段"与"全天"：用户视角的"今天下雨"通常指全天）
+  if(d.dayMaxPrecip!=null && d.dayMaxPrecip >= 1){
+    parts.push("今天白天有"+Math.round(d.dayMaxPrecip)+"mm/h的雨"+(d.dayMaxPrecipTime?("（约"+d.dayMaxPrecipTime+"最大）"):"")+"，雨后云厚湿度高，浓烈霞光机会低");
+  }
   if(parts.length===0) parts.push("通透度高、云况配合，是出片的好天气");
   // 超级水晶天检测：AOD 极低 + 能见度极高（空气几乎无污染）
   const crystalClear = (d.aod!=null && !isNaN(d.aod) && d.aod<=0.08) && (d.vis!=null && d.vis>=40);
@@ -3104,9 +3150,9 @@ function applySunDirBlock(src, skipRender){
   const elev = state.city.elev;
   const elevBonus = elev!=null ? (elev>=2000?5:elev>=1000?3:0) : 0;
   if(!state.manualOn){
-    d.index = Math.min(100, computeIndex(d.cloud, d.hum, d.vis, d.wind, d.aod, d.lowC, d.midC, d.highC, blkSet, d.precip) + elevBonus);
+    d.index = rainDayCap(Math.min(100, computeIndex(d.cloud, d.hum, d.vis, d.wind, d.aod, d.lowC, d.midC, d.highC, blkSet, d.precip) + elevBonus), d.dayMaxPrecip, d.precip);
     if(d.srIndex != null){
-      d.srIndex = Math.min(100, computeIndex(d.srCloud, d.srHum, d.srVis, d.srWind, d.srAOD, d.srLow, d.srMid, d.srHigh, blkRise, d.srPrecip) + elevBonus);
+      d.srIndex = rainDayCap(Math.min(100, computeIndex(d.srCloud, d.srHum, d.srVis, d.srWind, d.srAOD, d.srLow, d.srMid, d.srHigh, blkRise, d.srPrecip) + elevBonus), d.dayMaxPrecip, d.srPrecip);
     }
   }
   if(!skipRender){
