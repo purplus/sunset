@@ -980,9 +980,22 @@ async function fetchWeather(lat, lon, model, source){
   if(source==="met") return fetchMetNorway(lat, lon);
   return fetchOpenMeteo(lat, lon, model);
 }
-async function fetchOpenMeteo(lat, lon, model){
+async function fetchOpenMeteo(lat, lon, model, _retry){
   const offset = state.dateOffset || 0;
   const days = 3 + offset;
+  // ---- 本地缓存：5 分钟内命中直接复用（手机网络下大幅减少请求量，防 Open-Meteo 429 限流）----
+  // Open-Meteo 本身 15 分钟级刷新，5 分钟缓存的时效损失可忽略，但请求量能降一个数量级
+  const ckey = "sunset_om_"+lat.toFixed(3)+"_"+lon.toFixed(3)+"_"+(model||"default");
+  if(!_retry){
+    try{
+      const c = JSON.parse(localStorage.getItem(ckey)||"null");
+      if(c && c.ts && c.w && c.w.hourly && c.w.hourly.time && Date.now()-c.ts < 5*60*1000){
+        if(c.w.elevation!=null && state.city) state.city.elev = c.w.elevation;
+        if(c.w.utc_offset_seconds!=null && state.city) state.city.tz = c.w.utc_offset_seconds;
+        return c.w;
+      }
+    }catch(e){}
+  }
   let url = "https://api.open-meteo.com/v1/forecast"
     + "?latitude="+lat+"&longitude="+lon
     + "&hourly=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,cloud_base,relative_humidity_2m,wind_speed_10m,visibility,temperature_2m,dew_point_2m,precipitation"
@@ -1002,6 +1015,14 @@ async function fetchOpenMeteo(lat, lon, model){
     throw new Error("open-meteo network/timeout: "+(e.name==="AbortError"?"15s超时":e.message));
   }
   clearTimeout(t);
+  // 429 限流：等 8 秒退避后重试一次，仍失败才抛错（避免立即 fallback 到手动预估）
+  if(res.status===429){
+    if(!_retry){
+      await new Promise(r=>setTimeout(r, 8000));
+      return fetchOpenMeteo(lat, lon, model, true);
+    }
+    throw new Error("open-meteo fetch failed 429");
+  }
   if(!res.ok) throw new Error("open-meteo fetch failed "+res.status);
   const w = await res.json();
   // 实时海拔 + 真实时区：Open-Meteo 返回 elevation 和 utc_offset_seconds（秒）
@@ -1025,6 +1046,10 @@ async function fetchOpenMeteo(lat, lon, model){
     }
   }catch(e){ /* AOD 失败不致命，忽略 */ }
   if(!w.hourly.aerosol_optical_depth) w.hourly.aerosol_optical_depth = w.hourly.time.map(()=>null);
+  // 写缓存（5 分钟）——把 hourly/current/daily 一并缓存，下次打开页面直接复用
+  try{
+    localStorage.setItem(ckey, JSON.stringify({ts: Date.now(), w}));
+  }catch(e){ /* 存储超限忽略 */ }
   return w;
 }
 
@@ -3169,6 +3194,15 @@ async function renderPredictionMap(){
       }catch(e){ clearTimeout(t); return null; }
     };
     // 命中缓存：直接用缓存的网格数据重绘（省去 4 个批量请求）
+    // 内存缓存 miss 时尝试 localStorage（刷新页面后无需重新请求，防 429）
+    if(!(predMapCache && Date.now()-predMapCache.ts < PRED_MAP_TTL)){
+      try{
+        const pc = JSON.parse(localStorage.getItem("sunset_predmap_v2")||"null");
+        if(pc && pc.ts && Date.now()-pc.ts < PRED_MAP_TTL && pc.grid && Object.keys(pc.grid).length>10){
+          predMapCache = pc;
+        }
+      }catch(e){}
+    }
     if(predMapCache && Date.now()-predMapCache.ts < PRED_MAP_TTL){
       drawCloudCanvas(document.getElementById("predCloudCanvas"), predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo);
       drawPredictionCanvas(cv, predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo, predMapCache.cityIdx);
@@ -3178,7 +3212,9 @@ async function renderPredictionMap(){
       refreshSunDirWithSat();   // 卫星云量网格就绪后自动升级光路判断
       return;
     }
-    // 顺序分批发（每批失败重试一次）
+    // 批次之间加 500ms 间隔，降低瞬时并发（防 429）
+    const BATCH_GAP = 500;
+    // 顺序分批发（每批失败重试一次，批间 500ms 间隔）
     for(let i=0; i<allPts.length; i+=BATCH) batches.push(allPts.slice(i, i+BATCH));
     for(let bi=0; bi<batches.length; bi++){
       let arr = await fetchBatch(batches[bi]);
@@ -3222,8 +3258,9 @@ async function renderPredictionMap(){
         if(!grid[key]) grid[key] = cityIdx[nm];
       });
     }
-    // 3) 写入缓存 + 绘制两张图：实时云量图（白=云）+ 程度图（热力+城市指数）
+    // 3) 写入缓存（内存 + localStorage 双份，刷新页面后无需重发 4 批请求，防 429）+ 绘制两张图
     predMapCache = {ts:Date.now(), grid, LATS, LONS, cityIdx, geo};
+    try{ localStorage.setItem("sunset_predmap_v2", JSON.stringify({ts: Date.now(), grid, LATS, LONS, cityIdx})); }catch(e){}
     const cloudCv = document.getElementById("predCloudCanvas");
     drawCloudCanvas(cloudCv, grid, LATS, LONS, geo);
     drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx);
