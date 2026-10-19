@@ -811,14 +811,15 @@ function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, dirBlock, p
   // 降水惩罚：时段正在下雨 → 天空是雨云不是彩霞，强压分
   const rainPen = precipPenalty(precip);
   let raw = Math.round(base + penalty + dyePenalty + thinCirrus + dirPen + rainPen);
-  // 降水上限截断：只要时段有降水（雨云压顶），指数不允许落在高档
-  // 否则"好云况+小雨"仍会显示高分，与"下雨=没彩霞"的直觉冲突
+  // 降水上限截断：只要时段有降水（雨云压顶），指数不允许落在高档。
+  // 小雨(≥1mm/h)直接封顶30 → 落"一般"档（不建议出门），而不是"顺路可看"——
+  // 物理上雨云是全阴低云，与"中高云被夕阳染色"的彩霞机制根本不相干
   if(precip!=null && !isNaN(precip)){
     let cap = 100;
-    if(precip >= 10) cap = 15;
-    else if(precip >= 5) cap = 25;
-    else if(precip >= 1) cap = 40;
-    else if(precip >= 0.1) cap = 50;
+    if(precip >= 10) cap = 10;
+    else if(precip >= 5) cap = 20;
+    else if(precip >= 1) cap = 30;
+    else if(precip >= 0.1) cap = 45;
     if(raw > cap) raw = cap;
   }
   // 下限保护：极端条件（低 base + 多项惩罚）可能为负，负数无意义 → clamp 到 0
@@ -2924,9 +2925,11 @@ async function renderPredictionMap(){
       const midC = c.cloud_cover_mid!=null?c.cloud_cover_mid:0;
       const highC = c.cloud_cover_high!=null?c.cloud_cover_high:0;
       const cloud = c.cloud_cover!=null?c.cloud_cover: Math.max(lowC, midC, highC);
+      // 降水（实时 mm/h）：下雨=雨云压场，与首页彩霞指数同一口径压分
+      const precip = c.precipitation!=null?c.precipitation:null;
       // 与首页彩霞指数同一打分口径（湿度/能见度/风/AOD 取典型值，云层结构差异主导评分）
-      const vivid = computeIndex(cloud, 60, 20, 10, 0.25, lowC, midC, highC);
-      return {vivid, cloud, lowC};
+      const vivid = computeIndex(cloud, 60, 20, 10, 0.25, lowC, midC, highC, null, precip);
+      return {vivid, cloud, lowC, precip};
     };
     const fetchBatch = async (pts)=>{
       const ac = new AbortController();
@@ -2934,7 +2937,7 @@ async function renderPredictionMap(){
       try{
         const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+pts.map(p=>p.la).join(",")
           + "&longitude="+pts.map(p=>p.lo).join(",")
-          + "&current=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=1", {signal: ac.signal});
+          + "&current=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation&forecast_days=1", {signal: ac.signal});
         clearTimeout(t);
         if(!res.ok) return null;
         const arr = await res.json();
