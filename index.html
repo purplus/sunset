@@ -2209,7 +2209,15 @@ async function loadCity(city){
       state.isFallback = true;
       state.liveWeather = null;
       state.days = buildDaysFallback(city);
-      showToast("实时天气获取失败，已切换到手动预估模式");
+      // 把真实失败原因显示出来，便于区分：网络 / 限流 / 服务不可用
+      const why = (e && e.message) ? String(e.message) : "";
+      let short;
+      if(why.includes("429")) short = "Open-Meteo 限流(429)，稍后自动重试";
+      else if(why.includes("15s超时") || why.includes("timeout")) short = "请求超时，请检查网络";
+      else if(why.includes("network") || why.includes("Failed to fetch")) short = "网络异常，请检查网络";
+      else if(why.includes("fetch failed")) short = "数据源暂不可用("+why.replace("open-meteo fetch failed ","HTTP ")+")";
+      else short = "实时天气获取失败";
+      showToast(short+"，已切换到手动预估模式");
     }
   }
   if(mySeq !== state._loadSeq) return;
