@@ -708,7 +708,11 @@ function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC){
   let dyePenalty = 0;
   if(dyeCloud < 8) dyePenalty = -35;      // 几乎无云可染 → 强压分
   else if(dyeCloud < 20) dyePenalty = -15; // 云太少 → 中度扣分
-  return Math.round(base + penalty + dyePenalty);
+  // 薄卷云惩罚：中云不足但高云很多 → 薄卷云透光强、颜色浅，浓烈度有限
+  // （"干爽晴天高空薄云"场景，色彩远不如中云为主的火烧云）
+  let thinCirrus = 0;
+  if(m < 10 && h >= 60) thinCirrus = (h >= 80) ? -16 : -10;
+  return Math.round(base + penalty + dyePenalty + thinCirrus);
 }
 function level(index){
   if(index<35) return {t:"一般", c:"var(--bad)"};
@@ -2650,7 +2654,8 @@ async function renderPredictionMap(){
       const midC = c.cloud_cover_mid!=null?c.cloud_cover_mid:0;
       const highC = c.cloud_cover_high!=null?c.cloud_cover_high:0;
       const cloud = c.cloud_cover!=null?c.cloud_cover: Math.max(lowC, midC, highC);
-      const vivid = Math.round((scoreCloudMid(midC)*0.5 + scoreCloudHigh(highC)*0.5) * (1 - lowC/200));
+      // 与首页彩霞指数同一打分口径（湿度/能见度/风/AOD 取典型值，云层结构差异主导评分）
+      const vivid = computeIndex(cloud, 60, 20, 10, 0.25, lowC, midC, highC);
       return {vivid, cloud};
     };
     const fetchBatch = async (pts)=>{
@@ -2670,8 +2675,8 @@ async function renderPredictionMap(){
     if(predMapCache && Date.now()-predMapCache.ts < PRED_MAP_TTL){
       drawCloudCanvas(document.getElementById("predCloudCanvas"), predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo);
       drawPredictionCanvas(cv, predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo, predMapCache.cityIdx);
-      if(tag) tag.textContent = "程度图 · 实时云况（缓存 "+(predMapCache.ts>0?Math.round((Date.now()-predMapCache.ts)/60000):0)+" 分钟前）";
-      if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 实时云况";
+      if(tag) tag.textContent = "程度图 · 实时云况（与彩霞指数同口径，缓存 "+(predMapCache.ts>0?Math.round((Date.now()-predMapCache.ts)/60000):0)+" 分钟前）";
+      if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 实时云况";
       return;
     }
     // 顺序分批发（每批失败重试一次）
@@ -2696,6 +2701,19 @@ async function renderPredictionMap(){
       if(els.regionalNote) els.regionalNote.textContent = "数据获取失败，请刷新重试";
       return;
     }
+    // 城市精确点覆盖相邻格点：4° 网格过粗会低估城市云量（实测北京附近网格点 38% vs 城市点 76%），
+    // 用城市点数据覆盖其最近格点及 8 邻域，保证城市周边热力与首页彩霞指数同口径
+    Object.keys(cityIdx).forEach(nm=>{
+      const c = REGIONAL_CITIES.find(x=>x.name===nm);
+      if(!c) return;
+      const la0 = Math.round(c.lat/4)*4, lo0 = Math.round(c.lon/4)*4;
+      for(const dla of [-4,0,4]){
+        for(const dlo of [-4,0,4]){
+          const key = (la0+dla)+","+(lo0+dlo);
+          if(grid[key]) grid[key] = cityIdx[nm];
+        }
+      }
+    });
     // 网格不足时用城市指数填充相邻格点，保证热力图尽量完整
     if(gridN < 40 && cityN > 5){
       Object.keys(cityIdx).forEach(nm=>{
@@ -2710,8 +2728,8 @@ async function renderPredictionMap(){
     const cloudCv = document.getElementById("predCloudCanvas");
     drawCloudCanvas(cloudCv, grid, LATS, LONS, geo);
     drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx);
-    if(tag) tag.textContent = "程度图 · 实时云况";
-    if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 实时云况";
+    if(tag) tag.textContent = "程度图 · 实时云况（与彩霞指数同口径）";
+    if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 实时云况";
   }catch(e){
     console.error("pred map err:", e);
     if(tag) tag.textContent = "生成失败，请刷新重试";
