@@ -215,13 +215,8 @@
   .tcard-sunrise .s{color:#5a7a9a}
   .windy-map-frame{width:100%;height:430px;border:0;border-radius:12px;display:block;background:var(--panel-2)}
   .leaflet-frame{width:100%;height:300px;border-radius:12px;margin-top:10px;background:#1a2240}
-  .pred-leaflet{width:100%;height:340px;border-radius:12px;background:#151c36;z-index:1}
   .sun-dir-tooltip{background:rgba(0,0,0,0.85);border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:12px;border-radius:6px;padding:3px 10px;font-weight:bold}
-  .map-base-switch{position:absolute;top:8px;right:10px;display:flex;gap:4px;z-index:500;font-size:11px}
-  .map-base-switch button{border:1px solid rgba(100,200,255,.3);background:rgba(10,14,30,.7);color:#cfe3ff;padding:3px 9px;border-radius:999px;cursor:pointer;font-size:11px}
-  .map-base-switch button.on{border-color:#5ec2ff;color:#fff;background:rgba(64,196,255,.22)}
-  .pred-city-label span{font-size:9px;color:rgba(235,242,255,0.85);text-shadow:0 1px 2px rgba(0,0,0,0.9);pointer-events:none;white-space:nowrap;transform:translate(-50%,-100%);display:block}
-  #leafletMap .leaflet-overlay-pane svg path{filter: drop-shadow(0 0 3px rgba(0,0,0,0.8))}
+  .leaflet-overlay-pane svg path{filter: drop-shadow(0 0 3px rgba(0,0,0,0.8))}
   .legend-bar{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--ink-2)}
   .legend-bar span{background:var(--panel);padding:4px 8px;border-radius:6px;border:1px solid var(--line-soft)}
   .azimuth-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:6px 0 12px;flex-wrap:wrap}
@@ -459,20 +454,12 @@
     <div class="section-h"><h2>全国火烧云程度</h2><span class="tag" id="regionalNote">省会城市 · 直辖市 · 实时云况</span></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%" class="map-duo">
       <div style="position:relative;background:#151c36;border-radius:12px;overflow:hidden">
-        <canvas id="predCloudCanvas" class="canvas-map" style="display:block;width:100%;height:auto"></canvas>
-        <div id="predCloudLeaflet" class="pred-leaflet" style="display:none"></div>
+        <canvas id="predCloudCanvas" style="display:block;width:100%;height:auto"></canvas>
         <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px">实时云量</div>
-        <div class="map-base-switch" id="cloudBaseSwitch">
-          <button class="on" data-base="dark">深色</button><button data-base="light">浅色</button>
-        </div>
       </div>
       <div style="position:relative;background:#151c36;border-radius:12px;overflow:hidden">
-        <canvas id="predCanvas" class="canvas-map" style="display:block;width:100%;height:auto"></canvas>
-        <div id="predLeaflet" class="pred-leaflet" style="display:none"></div>
+        <canvas id="predCanvas" style="display:block;width:100%;height:auto"></canvas>
         <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px" id="predCanvasTag">正在生成程度图…</div>
-        <div class="map-base-switch" id="predBaseSwitch">
-          <button class="on" data-base="dark">深色</button><button data-base="light">浅色</button>
-        </div>
       </div>
     </div>
     <div style="margin-top:8px;background:rgba(21,28,54,0.9);border-radius:10px;padding:10px 14px">
@@ -2774,7 +2761,6 @@ async function renderPredictionMap(){
     };
     // 命中缓存：直接用缓存的网格数据重绘（省去 4 个批量请求）
     if(predMapCache && Date.now()-predMapCache.ts < PRED_MAP_TTL){
-      initPredLeaflets();   // 真实地图底图：先初始化，绘制时才能贴上 overlay
       drawCloudCanvas(document.getElementById("predCloudCanvas"), predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo);
       drawPredictionCanvas(cv, predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo, predMapCache.cityIdx);
       if(tag) tag.textContent = "程度图 · 实时云况（与彩霞指数同口径，缓存 "+(predMapCache.ts>0?Math.round((Date.now()-predMapCache.ts)/60000):0)+" 分钟前）";
@@ -2828,7 +2814,6 @@ async function renderPredictionMap(){
     }
     // 3) 写入缓存 + 绘制两张图：实时云量图（白=云）+ 程度图（热力+城市指数）
     predMapCache = {ts:Date.now(), grid, LATS, LONS, cityIdx, geo};
-    initPredLeaflets();   // 真实地图底图：先初始化，绘制时才能贴上 overlay
     const cloudCv = document.getElementById("predCloudCanvas");
     drawCloudCanvas(cloudCv, grid, LATS, LONS, geo);
     drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx);
@@ -2868,149 +2853,20 @@ function applySunDirBlock(){
   renderWeek();
 }
 
-/* ---- 程度图/云量图：真实地图底图（Leaflet）叠加透明热力 ---- */
-// Web Mercator 投影工具：使热力图层与底图瓦片对齐（贴图矩形 3~54°N / 73~135°E）
-function mercY(lat){ const r=Math.PI/180; return Math.log(Math.tan(Math.PI/4 + lat*r/2)); }
-function mercLat(y){ return (Math.atan(Math.exp(y)) - Math.PI/4)*180/Math.PI; }
-function makeMercPy(H, B){
-  const y0 = mercY(B.la1), y1 = mercY(B.la0);
-  return la => (y0 - mercY(la)) / (y0 - y1) * H;   // la1(54°N) 在顶部 → py=0
-}
-function mercRowLat(H, B, yy, STEP){
-  const y0 = mercY(B.la1), y1 = mercY(B.la0);
-  return mercLat(y0 - (yy+STEP/2)/H*(y0-y1));
-}
-let predLeaflet = null, predCloudLeaflet = null;
-let predOv = null, predCloudOv = null;
-let predMapInit = false;
-let predBaseStyle = "dark";
-// 完全自绘底图（不依赖任何外部瓦片服务）：省界/国界矢量渲染 + 经纬网格 + 城市点/名称
-// dark=深色科技风 light=浅色日间风
-const PRED_BASE_THEMES = {
-  dark:  {bg:"#101630", land:"rgba(35,48,90,0.55)", border:"rgba(150,180,255,0.5)",  grid:"rgba(140,160,220,0.16)", city:"#e8eefc", label:"rgba(235,242,255,0.85)"},
-  light: {bg:"#eef2f7", land:"rgba(226,232,244,0.9)", border:"rgba(90,110,160,0.55)", grid:"rgba(60,80,130,0.18)",  city:"#2a3a66", label:"rgba(35,55,105,0.9)"}
-};
-function drawOwnBase(map, geo, style){
-  const t = PRED_BASE_THEMES[style] || PRED_BASE_THEMES.dark;
-  const container = map.getContainer();
-  container.style.background = t.bg;
-  // 清除旧的底图元素（_predBase 标记），保留热力 overlay
-  map.eachLayer(l=>{ if(l._predBase) map.removeLayer(l); });
-  // 经纬网格（矢量，缩放不糊）
-  const grid = L.layerGroup();
-  for(let la=10; la<=60; la+=10) L.polyline([[la,65],[la,145]], {color:t.grid, weight:0.7, interactive:false}).addTo(grid);
-  for(let lo=70; lo<=140; lo+=10) L.polyline([[3,lo],[56,lo]], {color:t.grid, weight:0.7, interactive:false}).addTo(grid);
-  grid._predBase = true; grid.addTo(map);
-  // 省界/国界（矢量 GeoJSON，本站数据，无外部请求）
-  if(geo){
-    const land = L.geoJSON(geo, {style:{color:t.border, weight:0.9, fillColor:t.land, fillOpacity:1, interactive:false}});
-    land._predBase = true; land.addTo(map);
-  }
-  // 城市点（全部城市）+ 名称（仅 zoom≥5 显示，避免全国视图 107 个名称挤成一团）
-  const cities = L.layerGroup();
-  const cityList = (typeof REGIONAL_CITIES !== "undefined") ? REGIONAL_CITIES : [];
-  cityList.forEach(c=>{
-    L.circleMarker([c.lat, c.lon], {radius:2.4, color:t.city, weight:1.1, fillColor:t.city, fillOpacity:0.9, interactive:false}).addTo(cities);
-    L.marker([c.lat, c.lon], {interactive:false, icon:L.divIcon({className:"pred-city-label", html:"<span>"+c.name+"</span>", iconSize:[0,0]})}).addTo(cities);
-  });
-  cities._predBase = true; cities.addTo(map);
-  const applyLabelVisibility = ()=>{
-    const show = map.getZoom() >= 5;
-    cities.eachLayer(l=>{
-      if(l instanceof L.Marker) l.setOpacity(show ? 1 : 0);
-    });
-  };
-  map.on("zoomend", applyLabelVisibility);
-  map.on("zoom", applyLabelVisibility);
-  applyLabelVisibility();
-  // 热力 overlay 保持置顶
-  const ov = (map===predLeaflet) ? predOv : predCloudOv;
-  if(ov) ov.bringToFront();
-}
-function initPredLeaflets(){
-  if(typeof L === "undefined" || predMapInit) return;
-  const el = document.getElementById("predLeaflet"), elC = document.getElementById("predCloudLeaflet");
-  if(!el || !elC) return;
-  try{
-    predLeaflet = L.map("predLeaflet", {zoomControl:true, attributionControl:false}).setView([30,104], 4);
-    predCloudLeaflet = L.map("predCloudLeaflet", {zoomControl:true, attributionControl:false}).setView([30,104], 4);
-    const geo = predMapCache ? predMapCache.geo : null;
-    drawOwnBase(predLeaflet, geo, "dark");
-    drawOwnBase(predCloudLeaflet, geo, "dark");
-    // 两图缩放/平移同步（防循环）
-    const syncPair = (src, dst)=>{
-      src.on("zoomend", ()=>{
-        if(dst._isSyncing) return; dst._isSyncing = true;
-        dst.setView(src.getCenter(), src.getZoom());
-        setTimeout(()=>{ dst._isSyncing = false; }, 100);
-      });
-      src.on("moveend", ()=>{
-        if(dst._isSyncing) return; dst._isSyncing = true;
-        dst.setView(src.getCenter(), src.getZoom());
-        setTimeout(()=>{ dst._isSyncing = false; }, 100);
-      });
-    };
-    syncPair(predLeaflet, predCloudLeaflet);
-    syncPair(predCloudLeaflet, predLeaflet);
-    // 底图样式切换（深色/浅色，均为自绘）
-    [["#predBaseSwitch","predLeaflet"],["#cloudBaseSwitch","predCloudLeaflet"]].forEach(([sel,mapVar])=>{
-      const wrap = document.querySelector(sel);
-      if(!wrap) return;
-      wrap.querySelectorAll("button").forEach(btn=>{
-        btn.addEventListener("click", ()=>{
-          wrap.querySelectorAll("button").forEach(x=>x.classList.remove("on"));
-          btn.classList.add("on");
-          const map = mapVar==="predLeaflet" ? predLeaflet : predCloudLeaflet;
-          predBaseStyle = btn.dataset.base;
-          drawOwnBase(map, predMapCache ? predMapCache.geo : null, btn.dataset.base);
-        });
-      });
-    });
-    // canvas 隐藏，Leaflet 显示
-    document.getElementById("predCanvas").style.display = "none";
-    document.getElementById("predCloudCanvas").style.display = "none";
-    el.style.display = "";
-    elC.style.display = "";
-    predMapInit = true;
-  }catch(e){
-    console.error("pred leaflet init err:", e);
-    // 失败则保留 canvas 兜底
-    document.getElementById("predCanvas").style.display = "block";
-    document.getElementById("predCloudCanvas").style.display = "block";
-  }
-}
-// 导出热力层必须保留 alpha 透明（透明区域露出下方的自绘底图）。
-// 注意：不能用有损 webp（lossy webp 无透明通道，会把透明背景编码成不透明黑/深色，
-// 导致整张 overlay 盖住底图 → 图"不可看"）。PNG 完整保留透明通道。
-function exportCanvasToUrl(cv){
-  try{ return cv.toDataURL("image/png"); }catch(e){ return cv.toDataURL("image/png"); }
-}
-function attachPredOverlay(map, cv, B, key){
-  if(!map || !cv) return;
-  const url = exportCanvasToUrl(cv);
-  const bounds = [[B.la1, B.lo0],[B.la0, B.lo1]];
-  if(key==="pred"){
-    if(!predOv){ predOv = L.imageOverlay(url, bounds, {opacity:.9}).addTo(map); }
-    else predOv.setUrl(url);
-  }else{
-    if(!predCloudOv){ predCloudOv = L.imageOverlay(url, bounds, {opacity:.9}).addTo(map); }
-    else predCloudOv.setUrl(url);
-  }
-}
-
-/* ---- 实时云量图：白色=有云，透明=无云（canvas 插值渲染，透明底叠加真实地图） ---- */
+/* ---- 实时云量图：白色=有云，透明=无云（canvas 插值渲染） ---- */
 function drawCloudCanvas(cv, grid, LATS, LONS, geo){
   if(!cv) return;
   const BOUNDS = {la0:3, la1:54, lo0:73, lo1:135};
-  const W = 1800, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
-  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  const W = 900, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
+  const dpr = window.devicePixelRatio||1;
   cv.width = W*dpr; cv.height = H*dpr;
   cv.style.aspectRatio = W+"/"+H;
   const ctx = cv.getContext("2d");
   ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, W, H);   // 透明背景 → 叠加在真实地图底图上
+  ctx.fillStyle = "#151c36";
+  ctx.fillRect(0, 0, W, H);
   const px = lo => (lo - BOUNDS.lo0) / (BOUNDS.lo1 - BOUNDS.lo0) * W;
-  const py = makeMercPy(H, BOUNDS);
+  const py = la => (BOUNDS.la1 - la) / (BOUNDS.la1 - BOUNDS.la0) * H;
   const interpCloud = (la, lo)=>{
     let i1=0; while(i1<LATS.length-1 && LATS[i1+1]<=la) i1++;
     let j1=0; while(j1<LONS.length-1 && LONS[j1+1]<=lo) j1++;
@@ -3022,10 +2878,10 @@ function drawCloudCanvas(cv, grid, LATS, LONS, geo){
     const bot=(b?b.cloud:50)*(1-g)+(d?d.cloud:50)*g;
     return top*(1-f)+bot*f;
   };
-  // 白=云量 100% 透明=0%（省界/网格/城市名由自绘底图提供，这里只画云层避免重复）
-  const STEP = 3;
+  // 白=云量 100% 透明=0%
+  const STEP = 6;
   for(let yy=0; yy<H; yy+=STEP){
-    const la = mercRowLat(H, BOUNDS, yy, STEP);
+    const la = BOUNDS.la1 - (yy+STEP/2)/H*(BOUNDS.la1-BOUNDS.la0);
     for(let xx=0; xx<W; xx+=STEP){
       const lo = BOUNDS.lo0 + (xx+STEP/2)/W*(BOUNDS.lo1-BOUNDS.lo0);
       const cc = interpCloud(la, lo);
@@ -3035,28 +2891,88 @@ function drawCloudCanvas(cv, grid, LATS, LONS, geo){
       ctx.fillRect(xx, yy, STEP, STEP);
     }
   }
+  // 省界轮廓
+  if(geo){
+    const drawLines = c2=>{
+      c2.beginPath();
+      (geo.features||[]).forEach(f=>{
+        const g = f.geometry;
+        if(!g) return;
+        const polys = g.type==="Polygon" ? [g.coordinates] : (g.type==="MultiPolygon" ? g.coordinates : []);
+        polys.forEach(poly=>{
+          poly.forEach(ring=>{
+            ring.forEach((pt, k)=>{
+              const x = px(pt[0]), y = py(pt[1]);
+              if(k===0) c2.moveTo(x, y); else c2.lineTo(x, y);
+            });
+            c2.closePath();
+          });
+        });
+      });
+    };
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 0.8;
+    drawLines(ctx);
+    ctx.stroke();
+  }
+  // 经纬网格线
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.lineWidth = 0.6;
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.42)";
+  ctx.textAlign = "left";
+  for(let lo=70; lo<=140; lo+=10){
+    const x = px(lo);
+    if(x<-5||x>W+5) continue;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
+    ctx.fillText(lo+"°E", x+3, 11);
+  }
+  for(let la=10; la<=60; la+=10){
+    const y = py(la);
+    if(y<-5||y>H+5) continue;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+    ctx.fillText(la+"°N", 4, y+9);
+  }
+  ctx.restore();
+  // 城市点（白描边小圆）+ 名称标注
+  REGIONAL_CITIES.forEach(c=>{
+    const x = px(c.lon), y = py(c.lat);
+    ctx.beginPath();
+    ctx.arc(x, y, 4.5, 0, Math.PI*2);
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fill();
+  });
+  ctx.save();
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  ctx.textAlign = "center";
+  REGIONAL_CITIES.forEach(c=>{
+    const x = px(c.lon), y = py(c.lat);
+    ctx.fillText(c.name, x, y - 8);
+  });
+  ctx.restore();
   ctx.fillStyle = "rgba(255,255,255,0.45)";
-  ctx.font = "18px system-ui, sans-serif";
+  ctx.font = "9px system-ui, sans-serif";
   ctx.textAlign = "right";
-  ctx.fillText("南海诸岛", W-16, H-12);
-  // 贴到 Leaflet 自绘底图（已初始化时）；未初始化则 canvas 兜底可见
-  if(predCloudLeaflet) attachPredOverlay(predCloudLeaflet, cv, BOUNDS, "cloud");
+  ctx.fillText("南海诸岛", W-8, H-6);
 }
 
-/* ---- 用 canvas 绘制中国区域火烧云鲜艳度热力图（透明底叠加真实地图） ---- */
+/* ---- 用 canvas 绘制中国区域火烧云鲜艳度热力图 ---- */
 function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
   // 尺寸：中国范围 lat 3~54, lon 73~135（含南海诸岛）
   const BOUNDS = {la0:3, la1:54, lo0:73, lo1:135};
-  const W = 1800, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
-  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  const W = 900, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
+  const dpr = window.devicePixelRatio||1;
   cv.width = W*dpr; cv.height = H*dpr;
   cv.style.aspectRatio = W+"/"+H;
   const ctx = cv.getContext("2d");
   ctx.scale(dpr, dpr);
-  // 透明背景（真实地图底图透过热力）
-  ctx.clearRect(0, 0, W, H);
+  // 背景
+  ctx.fillStyle = "#151c36";
+  ctx.fillRect(0, 0, W, H);
   const px = lo => (lo - BOUNDS.lo0) / (BOUNDS.lo1 - BOUNDS.lo0) * W;
-  const py = makeMercPy(H, BOUNDS);
+  const py = la => (BOUNDS.la1 - la) / (BOUNDS.la1 - BOUNDS.la0) * H;
   // 云量网格 → 双线性插值（grid 值为 {vivid, cloud}，取 .vivid）
   const interp = (la, lo)=>{
     let i1=0; while(i1<LATS.length-1 && LATS[i1+1]<=la) i1++;
@@ -3106,9 +3022,9 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     drawGeo(mctx);
     mctx.fill("evenodd");
     // 热力画在主 canvas
-    const STEP = 3;
+    const STEP = 6;
     for(let yy=0; yy<H; yy+=STEP){
-      const la = mercRowLat(H, BOUNDS, yy, STEP);
+      const la = BOUNDS.la1 - (yy+STEP/2)/H*(BOUNDS.la1-BOUNDS.la0);
       for(let xx=0; xx<W; xx+=STEP){
         const lo = BOUNDS.lo0 + (xx+STEP/2)/W*(BOUNDS.lo1-BOUNDS.lo0);
         const v = interp(la, lo);
@@ -3122,12 +3038,33 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     ctx.globalCompositeOperation = "destination-in";
     ctx.drawImage(mask, 0, 0, W, H);
     ctx.restore();
-    // （省界/网格/城市名由自绘底图矢量提供，overlay 不再重复绘制）
+    // 重绘省界线
+    ctx.strokeStyle = "rgba(255,255,255,0.28)";
+    ctx.lineWidth = 0.8;
+    const drawLines = c2=>{
+      c2.beginPath();
+      (geo.features||[]).forEach(f=>{
+        const g = f.geometry;
+        if(!g) return;
+        const polys = g.type==="Polygon" ? [g.coordinates] : (g.type==="MultiPolygon" ? g.coordinates : []);
+        polys.forEach(poly=>{
+          poly.forEach(ring=>{
+            ring.forEach((pt, k)=>{
+              const x = px(pt[0]), y = py(pt[1]);
+              if(k===0) c2.moveTo(x, y); else c2.lineTo(x, y);
+            });
+            c2.closePath();
+          });
+        });
+      });
+    };
+    drawLines(ctx);
+    ctx.stroke();
   } else {
     // 无 GeoJSON：直接画热力 + 简化边框
-    const STEP = 3;
+    const STEP = 6;
     for(let yy=0; yy<H; yy+=STEP){
-      const la = mercRowLat(H, BOUNDS, yy, STEP);
+      const la = BOUNDS.la1 - (yy+STEP/2)/H*(BOUNDS.la1-BOUNDS.la0);
       for(let xx=0; xx<W; xx+=STEP){
         const lo = BOUNDS.lo0 + (xx+STEP/2)/W*(BOUNDS.lo1-BOUNDS.lo0);
         const v = interp(la, lo);
@@ -3137,17 +3074,37 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
       }
     }
     ctx.strokeStyle = "rgba(255,255,255,0.4)";
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 1.5;
     ctx.strokeRect(0, 0, W, H);
   }
+  // 经纬网格线（参考专业预测图）
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.16)";
+  ctx.lineWidth = 0.6;
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.textAlign = "left";
+  for(let lo=70; lo<=140; lo+=10){
+    const x = px(lo);
+    if(x<-5||x>W+5) continue;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
+    ctx.fillText(lo+"°E", x+3, 11);
+  }
+  for(let la=10; la<=60; la+=10){
+    const y = py(la);
+    if(y<-5||y>H+5) continue;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+    ctx.fillText(la+"°N", 4, y+9);
+  }
+  ctx.restore();
   // 日落等时线（虚线，沿经度标注各地日落时刻；参考图“虚线=各地日落等时线”）
   try{
     const dateForIso = (state && state.days && state.days[state.selDay] && state.days[state.selDay].time) ? new Date(state.days[state.selDay].time+"T00:00:00Z") : new Date();
     ctx.save();
     ctx.strokeStyle = "rgba(255,255,255,0.4)";
-    ctx.setLineDash([10,8]);
-    ctx.lineWidth = 2;
-    ctx.font = "18px system-ui, sans-serif";
+    ctx.setLineDash([5,4]);
+    ctx.lineWidth = 1;
+    ctx.font = "9px system-ui, sans-serif";
     ctx.fillStyle = "rgba(255,255,255,0.7)";
     ctx.textAlign = "left";
     const iso = {};
@@ -3165,13 +3122,13 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
       const hh = String(Math.floor(half/60)).padStart(2,"0");
       const mm = String(half%60).padStart(2,"0");
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-      ctx.fillText("日落"+hh+":"+mm, x+6, H-12);
+      ctx.fillText("日落"+hh+":"+mm, x+3, H-6);
     });
     ctx.restore();
   }catch(e){}
   // 逐格百分比数值（8° 网格点标注，参考图逐格百分比）
   ctx.save();
-  ctx.font = "18px system-ui, sans-serif";
+  ctx.font = "9px system-ui, sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.55)";
   ctx.textAlign = "center";
   for(let i=0;i<LATS.length;i+=2){
@@ -3179,23 +3136,27 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
       const la=LATS[i], lo=LONS[j];
       const v = interp(la, lo);
       if(v==null) continue;
-      ctx.fillText(Math.round(v)+"%", px(lo), py(la)+6);
+      ctx.fillText(Math.round(v)+"%", px(lo), py(la)+3);
     }
   }
   ctx.restore();
-  // 城市指数圆点（彩色=该城市指数等级；名称由自绘底图 divIcon 承担，避免重复）
+  // 城市圆点 + 名称标注（参考图：网格标百分比、城市标名称）
   REGIONAL_CITIES.forEach(c=>{
     const x = px(c.lon), y = py(c.lat);
     let v = cityIdx && cityIdx[c.name]!=null ? cityIdx[c.name] : interp(c.lat, c.lon);
     if(v!=null && typeof v === "object") v = v.vivid;
     if(v==null) return;
     ctx.beginPath();
-    ctx.arc(x, y, 12, 0, Math.PI*2);
+    ctx.arc(x, y, 6, 0, Math.PI*2);
     ctx.fillStyle = vividColor(v).replace(/[^,]+\)$/, "1)");
     ctx.fill();
     ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 2.8;
+    ctx.lineWidth = 1.4;
     ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(c.name, x, y - 10);
   });
   // 太阳光线方向遮挡光路叠加（巧摄理念）：画出当前城市今日日落/日出方位的 7 个采样点
   // （方向遮挡为实时评估，仅对"今日"有意义）
@@ -3204,11 +3165,9 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
   }
   // 南海诸岛小图（简化标注）
   ctx.fillStyle = "rgba(255,255,255,0.5)";
-  ctx.font = "18px system-ui, sans-serif";
+  ctx.font = "9px system-ui, sans-serif";
   ctx.textAlign = "right";
-  ctx.fillText("南海诸岛", W-16, H-12);
-  // 贴到 Leaflet 真实底图（已初始化时）；未初始化则 canvas 兜底可见
-  if(predLeaflet) attachPredOverlay(predLeaflet, cv, BOUNDS, "pred");
+  ctx.fillText("南海诸岛", W-8, H-6);
 }
 
 // 在程度图上叠加当前城市的日落/日出光路采样点（虚线=光路方向，圆点=60~420km 采样位）
@@ -3227,8 +3186,8 @@ function drawSunDirOnPred(ctx, W, H, px, py){
     ctx.save();
     ctx.strokeStyle = b.color;
     ctx.globalAlpha = 0.55;
-    ctx.lineWidth = 2.6;
-    ctx.setLineDash([8,8]);
+    ctx.lineWidth = 1.3;
+    ctx.setLineDash([4,4]);
     ctx.beginPath();
     ctx.moveTo(cxp, cyp);
     const pts = [];
@@ -3244,29 +3203,29 @@ function drawSunDirOnPred(ctx, W, H, px, py){
     pts.forEach(pt=>{
       if(pt.x<-5||pt.x>W+5||pt.y<-5||pt.y>H+5) return;
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 7, 0, Math.PI*2);
+      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI*2);
       ctx.fillStyle = b.color;
       ctx.fill();
       ctx.strokeStyle = "rgba(10,14,30,.9)";
-      ctx.lineWidth = 2.8;
+      ctx.lineWidth = 1.4;
       ctx.stroke();
-      ctx.font = "18px system-ui, sans-serif";
+      ctx.font = "9px system-ui, sans-serif";
       ctx.fillStyle = b.color;
       ctx.textAlign = "left";
-      ctx.fillText(pt.km+"km", pt.x+10, pt.y-10);
+      ctx.fillText(pt.km+"km", pt.x+5, pt.y-5);
     });
     // 城市锚点 + 方位标签
     ctx.beginPath();
-    ctx.arc(cxp, cyp, 10, 0, Math.PI*2);
+    ctx.arc(cxp, cyp, 5, 0, Math.PI*2);
     ctx.fillStyle = "#fff";
     ctx.fill();
     ctx.strokeStyle = b.color;
-    ctx.lineWidth = 3.2;
+    ctx.lineWidth = 1.6;
     ctx.stroke();
-    ctx.font = "600 22px system-ui, sans-serif";
+    ctx.font = "600 11px system-ui, sans-serif";
     ctx.fillStyle = b.color;
     ctx.textAlign = "center";
-    const labelY = cyp - 28;
+    const labelY = cyp - 14;
     ctx.fillText(b.icon+" "+city.n+" "+b.label, cxp, labelY);
   });
 }
