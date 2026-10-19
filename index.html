@@ -707,7 +707,8 @@ function sunDirBlock(lat, lon, azDeg, grid, LATS, LONS){
     const lowC  = interpGridVal(grid, LATS, LONS, p.lat, p.lon, "lowC");
     if(cloud == null) return;
     // 光路遮挡：总云量为主 + 低云加重（低云贴地平线，直接挡太阳本体）
-    const occl = (lowC!=null) ? Math.min(100, cloud*0.6 + lowC*0.4) : cloud;
+    // 卫星网格只有亮度反演的总云量（无法分层）→ 直接用 cloud 作为遮挡
+    const occl = (grid && grid._sat) ? cloud : ((lowC!=null) ? Math.min(100, cloud*0.6 + lowC*0.4) : cloud);
     total += occl * weights[i];
     wsum += weights[i];
   });
@@ -1274,7 +1275,7 @@ function renderHero(){
     els.dirBlockBar.innerHTML = ""
       + `<span class="db-chip" style="color:${dbT.c};border-color:${dbT.c}55;background:${dbT.c}14" title="沿日落方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,false))}°)向外420km光路的实时云况评估，遮挡高=阳光被云挡住">🌇 ${dbT.t}${db!=null?` <b>${db}%</b>`:""}</span>`
       + `<span class="db-chip" style="color:${dbrT.c};border-color:${dbrT.c}55;background:${dbrT.c}14" title="沿日出方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,true))}°)向外420km光路的实时云况评估">🌅 ${dbrT.t}${dbr!=null?` <b>${dbr}%</b>`:""}</span>`
-      + `<span class="db-hint">巧摄理念 · 实时光路遮挡（仅今日实时）</span>`;
+      + `<span class="db-hint">巧摄理念 · 实时光路遮挡（${satDirGrid?"葵花9卫星云图反演":"模型实时云况"}，仅今日实时）</span>`;
   }else{
     // 未来天：方向遮挡依赖实时云况，无法预报，明确标注避免与天气预报混淆
     els.dirBlockBar.innerHTML = `<span class="db-hint">方向遮挡为实时评估，仅今日有效；未来日请以当天实时云图为准（可切回"今日"查看当前光路）</span>`;
@@ -2291,6 +2292,132 @@ function fallbackSatLayer(){
   return SAT_FALLBACK_ORDER[i+1];
 }
 
+/* ================= 卫星云量网格：光路遮挡的真实数据源 =================
+   "实时光路"要真实，云况必须来自卫星而不是模型粗网格：
+   拉取葵花9(GIBS WMTS)中国区 z5 瓦片拼成画布 → 按 1° 网格采样像素亮度
+   → 反演云量 0-100（可见光：云亮白/地物偏暗；红外：亮=冷云顶）→ 光路插值用此网格。
+   失败自动降级回 Open-Meteo 4° 模型网格（原有逻辑不变）。 */
+let satCloudCache = null;      // {ts, grid, LATS, LONS, frame, layer}
+const SAT_CLOUD_TTL = 10*60*1000;
+let satCloudSeq = 0;           // 防竞态序号
+let satDirGrid = null;         // 当前生效的光路方向网格（卫星成功时为卫星网格，否则 null=模型网格）
+
+// 亮度 → 云量反演（0-100）。阈值经 GIBS 影像目测标定：
+//   可见光：无云海洋/陆地偏暗(<110)，云亮白(180~255) → (b-110)/1.3
+//   红外：地面暖(暗,<60)，云顶冷(亮) → (b-55)/1.9
+function satBrightToCloud(b, layer){
+  if(layer === "ir") return Math.max(0, Math.min(100, Math.round((b-55)/1.9)));
+  return Math.max(0, Math.min(100, Math.round((b-110)/1.3)));
+}
+
+async function buildSatCloudGrid(){
+  if(satCloudCache && Date.now()-satCloudCache.ts < SAT_CLOUD_TTL) return satCloudCache;
+  const seq = ++satCloudSeq;
+  // 白天用可见光（最接近实拍的真云图），夜间自动切红外（24h 可用）
+  const h = new Date().getHours();
+  const prefer = (h>=6 && h<18) ? "vis" : "ir";
+  // 帧：复用卫星模块当前帧（新鲜则直接使用），否则探测
+  let frame = (satFrame && /^20\d\d-/.test(satFrame)) ? satFrame : null;
+  if(!frame){
+    try{ frame = await probeLatestSatFrame(); }catch(e){}
+  }
+  if(!frame) return null;
+  // 尝试首选层，加载不足(瓦片大量失败/夜间无数据)则换另一层重试一次
+  const T = 256, z = SAT_LEVEL;
+  const cols = []; for(let c=SAT_COL0;c<=SAT_COL1;c++) cols.push(c);
+  const rows = []; for(let r=SAT_ROW0;r<=SAT_ROW1;r++) rows.push(r);
+  const loadTiles = async (layer)=>{
+    const cv = document.createElement("canvas");
+    cv.width = cols.length*T; cv.height = rows.length*T;
+    const ctx = cv.getContext("2d", {willReadFrequently:true});
+    if(!ctx) return null;
+    const L = SAT_LAYERS[layer];
+    const tiles = [];
+    rows.forEach(r=>{ cols.forEach(c=>{ tiles.push({c,r}); }); });
+    let ti = 0, ok = 0, fail = 0;
+    const worker = async ()=>{
+      while(ti < tiles.length){
+        const t = tiles[ti++];
+        const url = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"+L.id+"/default/"+frame+"/"+L.tms+"/"+z+"/"+t.r+"/"+t.c+".png";
+        try{
+          const ctl = new AbortController();
+          const to = setTimeout(()=>ctl.abort(), 9000);
+          const r = await fetch(url, {mode:"cors", signal:ctl.signal});
+          clearTimeout(to);
+          if(!r.ok){ fail++; continue; }
+          const blob = await r.blob();
+          const objUrl = URL.createObjectURL(blob);
+          const img = new Image();
+          img.decoding = "async";
+          await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src=objUrl; });
+          URL.revokeObjectURL(objUrl);
+          ctx.drawImage(img, (t.c-SAT_COL0)*T, (t.r-SAT_ROW0)*T);
+          ok++;
+        }catch(e){ fail++; }
+      }
+    };
+    await Promise.all(Array.from({length:6}, worker));
+    if(ok < 12) return null;   // 35 张里成功不足 12 张视为加载失败
+    return {cv, ctx, layer};
+  };
+  let got = await loadTiles(prefer);
+  if(!got && prefer !== "ir") got = await loadTiles("ir");
+  if(!got) return null;
+  const {cv, ctx, layer} = got;
+  // 像素坐标映射：经纬度 → 画布像素（Web Mercator，与卫星模块一致）
+  const px = (lon)=> (webMercTile(0, lon, z).x - SAT_COL0) * T;
+  const py = (lat)=> (webMercTile(lat, 0, z).y - SAT_ROW0) * T;
+  // 1° 网格采样（3×3 像素均值抗噪；一次性取全画布像素，避免逐点 getImageData）
+  const LATS = [], LONS = [];
+  for(let la=18; la<=54; la+=1) LATS.push(la);
+  for(let lo=73; lo<=135; lo+=1) LONS.push(lo);
+  let full = null;
+  try{ full = ctx.getImageData(0, 0, cv.width, cv.height).data; }catch(e){ return null; }
+  const grid = {};
+  LATS.forEach(la=>{
+    LONS.forEach(lo=>{
+      const cx = Math.round(px(lo)), cy = Math.round(py(la));
+      if(cx<1||cx>=cv.width-1||cy<1||cy>=cv.height-1) return;
+      let s=0, n=0;
+      for(let dy=-1;dy<=1;dy++){
+        for(let dx=-1;dx<=1;dx++){
+          const idx = ((cy+dy)*cv.width + (cx+dx))*4;
+          const a = full[idx+3];
+          if(a < 16) continue;              // 透明=瓦片缺失
+          s += 0.299*full[idx] + 0.587*full[idx+1] + 0.114*full[idx+2];
+          n++;
+        }
+      }
+      if(n===0) return;
+      grid[la+","+lo] = {cloud: satBrightToCloud(s/n, layer), src:"satellite"};
+    });
+  });
+  const nPts = Object.keys(grid).length;
+  if(nPts < 100) return null;              // 有效格点太少视为失败
+  grid._sat = true;                         // 标记卫星源（sunDirBlock 据此不分低云）
+  const out = {ts: Date.now(), grid, LATS, LONS, frame, layer, src:"satellite"};
+  satCloudCache = out;
+  if(seq !== satCloudSeq) return null;      // 已被更新的请求覆盖
+  return out;
+}
+
+// 卫星网格就绪后重算方向遮挡：替换模型网格 → 指数/文案/光路云量全部用卫星数据
+async function refreshSunDirWithSat(){
+  if(!predMapCache || !state.city || !state.days || !state.days[0]) return;
+  const sat = await buildSatCloudGrid();
+  if(!sat) { satDirGrid = null; return; }
+  if(!state.city || !state.days || !state.days[0]) return;
+  satDirGrid = sat;
+  applySunDirBlock(sat);
+  // 重绘程度图（光路采样点改用卫星云量标注）+ 刷新指数/遮挡文案
+  const cv = document.getElementById("predCanvas");
+  if(cv && predMapCache){
+    drawPredictionCanvas(cv, predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo, predMapCache.cityIdx);
+  }
+  renderHero();
+  renderWeek();
+}
+
 // 绘制卫星实况云图
 async function renderSatMap(){
   const cv = document.getElementById("satCanvas");
@@ -2766,6 +2893,7 @@ async function renderPredictionMap(){
       if(tag) tag.textContent = "程度图 · 实时云况（与彩霞指数同口径，缓存 "+(predMapCache.ts>0?Math.round((Date.now()-predMapCache.ts)/60000):0)+" 分钟前）";
       if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 实时云况";
       applySunDirBlock();
+      refreshSunDirWithSat();   // 卫星云量网格就绪后自动升级光路判断
       return;
     }
     // 顺序分批发（每批失败重试一次）
@@ -2821,6 +2949,7 @@ async function renderPredictionMap(){
     if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 实时云况";
     // 云况网格就绪后：评估太阳光线方向遮挡（巧摄理念），并入今日指数
     applySunDirBlock();
+    refreshSunDirWithSat();   // 卫星云量网格就绪后自动升级光路判断
   }catch(e){
     console.error("pred map err:", e);
     if(tag) tag.textContent = "生成失败，请刷新重试";
@@ -2829,14 +2958,16 @@ async function renderPredictionMap(){
 
 // 用实时云况网格评估"今日"日落/日出方向遮挡（巧摄理念：太阳方位被云挡住 → 阳光照不过来）
 // 只对今日生效（未来天无实时网格可评估）；手动调整模式下只展示遮挡、不改指数
-function applySunDirBlock(){
-  if(!predMapCache || !state.city || !state.days || !state.days[0]) return;
+// src 可选：卫星云量网格（{grid,LATS,LONS}）；缺省用 Open-Meteo 4° 模型网格
+function applySunDirBlock(src){
+  const g = src || predMapCache;
+  if(!g || !state.city || !state.days || !state.days[0]) return;
   const d = state.days[0];
   const lat = state.city.lat, lon = state.city.lon;
   const tz = state.city.tz;
   const azSet = sunAzimuth(lat, lon, d.date, tz, false);
   const azRise = sunAzimuth(lat, lon, d.date, tz, true);
-  const grid = predMapCache.grid, LATS = predMapCache.LATS, LONS = predMapCache.LONS;
+  const grid = g.grid, LATS = g.LATS, LONS = g.LONS;
   const blkSet = sunDirBlock(lat, lon, azSet, grid, LATS, LONS);
   const blkRise = sunDirBlock(lat, lon, azRise, grid, LATS, LONS);
   d.dirBlock = blkSet;
@@ -3159,9 +3290,9 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     ctx.fillText(c.name, x, y - 10);
   });
   // 太阳光线方向遮挡光路叠加（巧摄理念）：画出当前城市今日日落/日出方位的 7 个采样点
-  // （方向遮挡为实时评估，仅对"今日"有意义）
+  // （方向遮挡为实时评估，仅对"今日"有意义；卫星网格就绪后光路云量用卫星数据标注）
   if(state && state.city && state.days && state.days[0]){
-    drawSunDirOnPred(ctx, W, H, px, py);
+    drawSunDirOnPred(ctx, W, H, px, py, satDirGrid);
   }
   // 南海诸岛小图（简化标注）
   ctx.fillStyle = "rgba(255,255,255,0.5)";
@@ -3171,7 +3302,7 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
 }
 
 // 在程度图上叠加当前城市的日落/日出光路采样点（虚线=光路方向，圆点=60~420km 采样位）
-function drawSunDirOnPred(ctx, W, H, px, py){
+function drawSunDirOnPred(ctx, W, H, px, py, dirGrid){
   const city = state.city, d0 = state.days[0];
   if(!city || typeof city.lat!=="number") return;
   const cxp = px(city.lon), cyp = py(city.lat);
@@ -3195,11 +3326,11 @@ function drawSunDirOnPred(ctx, W, H, px, py){
       const p = sampleAlongAzimuth(city.lat, city.lon, b.az, km);
       const x = px(p.lon), y = py(p.lat);
       ctx.lineTo(x, y);
-      pts.push({x, y, km});
+      pts.push({x, y, km, lat:p.lat, lon:p.lon});
     });
     ctx.stroke();
     ctx.restore();
-    // 采样圆点 + 距离标注
+    // 采样圆点 + 距离标注（有方向遮挡网格时附注该点实时云量，卫星源显示更真实的光路云墙）
     pts.forEach(pt=>{
       if(pt.x<-5||pt.x>W+5||pt.y<-5||pt.y>H+5) return;
       ctx.beginPath();
@@ -3213,6 +3344,13 @@ function drawSunDirOnPred(ctx, W, H, px, py){
       ctx.fillStyle = b.color;
       ctx.textAlign = "left";
       ctx.fillText(pt.km+"km", pt.x+5, pt.y-5);
+      if(dirGrid){
+        const cld = interpGridVal(dirGrid.grid, dirGrid.LATS, dirGrid.LONS, pt.lat, pt.lon, "cloud");
+        if(cld!=null){
+          ctx.fillStyle = "rgba(255,255,255,.75)";
+          ctx.fillText(Math.round(cld)+"%", pt.x+5, pt.y+7);
+        }
+      }
     });
     // 城市锚点 + 方位标签
     ctx.beginPath();
