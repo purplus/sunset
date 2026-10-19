@@ -1266,12 +1266,18 @@ function renderHero(){
     + '<span class="chip" style="background:'+chipColor+'">'+stateChip+'</span>';
 
   // 太阳光线方向遮挡（巧摄理念）：实时网格评估日落/日出方位的云层遮挡
-  const db = d.dirBlock, dbr = d.dirBlockRise;
+  // 注意口径：方向遮挡基于"当前实时云况"，只对今日有效；未来天为预报口径，无法实时评估光路
+  const db = isToday ? d.dirBlock : null, dbr = isToday ? d.dirBlockRise : null;
   const dbT = dirBlockText(db, true), dbrT = dirBlockText(dbr, false);
-  els.dirBlockBar.innerHTML = ""
-    + `<span class="db-chip" style="color:${dbT.c};border-color:${dbT.c}55;background:${dbT.c}14" title="沿日落方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,false))}°)向外420km光路的实时云况评估，遮挡高=阳光被云挡住">🌇 ${dbT.t}${db!=null?` <b>${db}%</b>`:""}</span>`
-    + `<span class="db-chip" style="color:${dbrT.c};border-color:${dbrT.c}55;background:${dbrT.c}14" title="沿日出方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,true))}°)向外420km光路的实时云况评估">🌅 ${dbrT.t}${dbr!=null?` <b>${dbr}%</b>`:""}</span>`
-    + `<span class="db-hint">巧摄理念 · 实时光路遮挡</span>`;
+  if(isToday){
+    els.dirBlockBar.innerHTML = ""
+      + `<span class="db-chip" style="color:${dbT.c};border-color:${dbT.c}55;background:${dbT.c}14" title="沿日落方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,false))}°)向外420km光路的实时云况评估，遮挡高=阳光被云挡住">🌇 ${dbT.t}${db!=null?` <b>${db}%</b>`:""}</span>`
+      + `<span class="db-chip" style="color:${dbrT.c};border-color:${dbrT.c}55;background:${dbrT.c}14" title="沿日出方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,true))}°)向外420km光路的实时云况评估">🌅 ${dbrT.t}${dbr!=null?` <b>${dbr}%</b>`:""}</span>`
+      + `<span class="db-hint">巧摄理念 · 实时光路遮挡（仅今日实时）</span>`;
+  }else{
+    // 未来天：方向遮挡依赖实时云况，无法预报，明确标注避免与天气预报混淆
+    els.dirBlockBar.innerHTML = `<span class="db-hint">方向遮挡为实时评估，仅今日有效；未来日请以当天实时云图为准（可切回"今日"查看当前光路）</span>`;
+  }
 
   // 主盘 = viewType 类型；次盘 = 另一类型
   const duskIdx = d.index, dawnIdx = d.srIndex || 0;
@@ -3151,11 +3157,76 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     ctx.textAlign = "center";
     ctx.fillText(c.name, x, y - 10);
   });
+  // 太阳光线方向遮挡光路叠加（巧摄理念）：画出当前城市今日日落/日出方位的 7 个采样点
+  // （方向遮挡为实时评估，仅对"今日"有意义）
+  if(state && state.city && state.days && state.days[0]){
+    drawSunDirOnPred(ctx, W, H, px, py);
+  }
   // 南海诸岛小图（简化标注）
   ctx.fillStyle = "rgba(255,255,255,0.5)";
   ctx.font = "9px system-ui, sans-serif";
   ctx.textAlign = "right";
   ctx.fillText("南海诸岛", W-8, H-6);
+}
+
+// 在程度图上叠加当前城市的日落/日出光路采样点（虚线=光路方向，圆点=60~420km 采样位）
+function drawSunDirOnPred(ctx, W, H, px, py){
+  const city = state.city, d0 = state.days[0];
+  if(!city || typeof city.lat!=="number") return;
+  const cxp = px(city.lon), cyp = py(city.lat);
+  if(cxp<-5 || cxp>W+5 || cyp<-5 || cyp>H+5) return;
+  const kmSteps = [60,120,180,240,300,360,420];
+  const beams = [
+    {az: sunAzimuth(city.lat, city.lon, d0.date, city.tz, false), color:"#ff9a3c", label:"日落光路", icon:"🌇"},
+    {az: sunAzimuth(city.lat, city.lon, d0.date, city.tz, true),  color:"#5ec8e3", label:"日出光路", icon:"🌅"}
+  ];
+  beams.forEach(b=>{
+    // 虚线光路
+    ctx.save();
+    ctx.strokeStyle = b.color;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 1.3;
+    ctx.setLineDash([4,4]);
+    ctx.beginPath();
+    ctx.moveTo(cxp, cyp);
+    const pts = [];
+    kmSteps.forEach(km=>{
+      const p = sampleAlongAzimuth(city.lat, city.lon, b.az, km);
+      const x = px(p.lon), y = py(p.lat);
+      ctx.lineTo(x, y);
+      pts.push({x, y, km});
+    });
+    ctx.stroke();
+    ctx.restore();
+    // 采样圆点 + 距离标注
+    pts.forEach(pt=>{
+      if(pt.x<-5||pt.x>W+5||pt.y<-5||pt.y>H+5) return;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI*2);
+      ctx.fillStyle = b.color;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(10,14,30,.9)";
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.font = "9px system-ui, sans-serif";
+      ctx.fillStyle = b.color;
+      ctx.textAlign = "left";
+      ctx.fillText(pt.km+"km", pt.x+5, pt.y-5);
+    });
+    // 城市锚点 + 方位标签
+    ctx.beginPath();
+    ctx.arc(cxp, cyp, 5, 0, Math.PI*2);
+    ctx.fillStyle = "#fff";
+    ctx.fill();
+    ctx.strokeStyle = b.color;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.fillStyle = b.color;
+    ctx.textAlign = "center";
+    const labelY = cyp - 14;
+    ctx.fillText(b.icon+" "+city.n+" "+b.label, cxp, labelY);
+  });
 }
 
 
