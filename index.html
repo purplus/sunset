@@ -56,6 +56,13 @@
   .live-weather .lw-time{color:var(--ink-3);font-size:11px}
   .expired-note{margin-top:8px;font-size:12px;color:var(--ink-3);background:rgba(255,255,255,.04);border:1px dashed rgba(255,255,255,.15);border-radius:10px;padding:6px 10px;line-height:1.5}
   .expired-note b{color:#ffb84d;font-weight:600}
+  .cause-card{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin-top:12px}
+  .cause-title{grid-column:1/-1;font-size:12px;font-weight:600;color:var(--ink-2);letter-spacing:.5px}
+  .cause-item{background:var(--panel);border:1px solid var(--line-soft);border-radius:10px;padding:8px 10px;min-height:64px;display:flex;flex-direction:column;justify-content:space-between}
+  .cause-item .ck{font-size:11px;color:var(--ink-3)}
+  .cause-item .cv{font-size:15px;font-weight:700;color:var(--ink-1);margin-top:2px}
+  .cause-item .cs{font-size:10.5px;margin-top:3px;line-height:1.4;font-weight:500}
+  .cause-item .cs-dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px;vertical-align:1px}
 
   .loc{display:flex;align-items:center;gap:8px}
   .loc-box{position:relative}
@@ -397,6 +404,7 @@
         <div class="dirblock-row" id="dirBlockBar"></div>
         <div class="verdict" id="verdict"></div>
         <div class="verdict-detail" id="verdictDetail"></div>
+        <div class="cause-card" id="causeCard"></div>
         <div class="times">
           <div class="tcard tcard-sunset"><div class="k">日落时刻</div><div class="v" id="tSunset">--:--</div><div class="s">天文日落，出片主参考</div></div>
           <div class="tcard tcard-sunset"><div class="k">黄金时刻</div><div class="v" id="tGolden">--:--</div><div class="s">日落前约 1 小时 · 暖色最浓</div></div>
@@ -905,11 +913,11 @@ function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, dirBlock, p
   return Math.max(0, raw);
 }
 function level(index){
-  if(index<35) return {t:"一般", c:"var(--bad)"};
-  if(index<55) return {t:"平淡，顺路可看", c:"var(--warn)"};
-  if(index<70) return {t:"有戏，值得蹲点", c:"var(--orange)"};
-  if(index<82) return {t:"机会不错，指数较高", c:"var(--gold)"};
-  return {t:"绝佳，出片率高", c:"var(--good)"};
+  if(index<35) return {t:"不烧", c:"var(--bad)"};
+  if(index<55) return {t:"微烧，顺路可看", c:"var(--warn)"};
+  if(index<70) return {t:"中烧，值得蹲点", c:"var(--orange)"};
+  if(index<82) return {t:"大烧，指数较高", c:"var(--gold)"};
+  return {t:"大烧，出片率高", c:"var(--good)"};
 }
 
 /* ================= 全局状态 ================= */
@@ -935,7 +943,7 @@ const els = {
   citySel:$("citySel"), liveWeather:$("liveWeather"), locBtn:$("locBtn"), loading:$("loading"),
   dateInput:$("dateInput"), todayBtn:$("todayBtn"),
   modelNote:$("modelNote"), cloudChart:$("cloudChart"), chartNote:$("chartNote"),
-  heroDate:$("heroDate"), indexNum:$("indexNum"), indexLvl:$("indexLvl"), indexExpired:$("indexExpired"), indexNumSR:$("indexNumSR"), indexLvlSR:$("indexLvlSR"),
+  heroDate:$("heroDate"), indexNum:$("indexNum"), indexLvl:$("indexLvl"), indexExpired:$("indexExpired"), indexNumSR:$("indexNumSR"), indexLvlSR:$("indexLvlSR"), causeCard:$("causeCard"),
   gaugeArc:$("gaugeArc"), gaugeArcSR:$("gaugeArcSR"), dirBlockBar:$("dirBlockBar"), verdict:$("verdict"), verdictDetail:$("verdictDetail"),
   tSunset:$("tSunset"), tGolden:$("tGolden"), tBlue:$("tBlue"),
   tSunriseIdx:$("tSunriseIdx"), tSunriseTime:$("tSunriseTime"),
@@ -1467,6 +1475,7 @@ function renderHero(){
   // 结论与时间卡跟随主类型
   els.verdict.textContent = verdictText(d, isDusk);
   els.verdictDetail.textContent = verdictDetail(d, isDusk);
+  renderCauseCard(d, isDusk);
 
   els.tSunset.textContent = d.sunsetHM;
   els.tGolden.textContent = d.goldenStart + " – " + d.sunsetHM;
@@ -1528,12 +1537,62 @@ function verdictText(d, isDusk=true){
   // 白天已下中雨及以上（时段预报雨停）：雨日整体压低，主文案直接说明
   if(d.dayMaxPrecip!=null && d.dayMaxPrecip >= 3 && (p==null || p < 0.1) && idx <= 55)
     return "今天白天有中到大雨，雨后云厚湿重，"+(isDusk?"晚霞":"朝霞")+"机会低。";
-  if(lv.t.startsWith("绝佳")) return when+"是一场值得出门的火烧云。";
-  if(lv.t.startsWith("机会不错")) return "霞光可期，提前一小时到机位。";
-  if(lv.t.startsWith("有戏")) return "有一点希望，值得蹲一蹲。";
-  if(lv.t.startsWith("平淡")) return "多半平平，顺路看一眼即可。";
+  if(lv.t.startsWith("大烧")) return t.includes("出片") ? when+"是一场值得出门的火烧云。" : "霞光可期，提前一小时到机位。";
+  if(lv.t.startsWith("中烧")) return "有一点希望，值得蹲一蹲。";
+  if(lv.t.startsWith("微烧")) return "多半平平，顺路看一眼即可。";
   return "不建议特意为"+(isDusk?"晚霞":"朝霞")+"出门。";
 }
+/* ---- 成因拆解卡：七项指标一张卡（对标"指数怎么算"的可视化拆解） ---- */
+// 判读口径与 computeIndex / verdictDetail 完全一致（画布区间/低云阈值/光路档位/湿度能见度降水）
+function renderCauseCard(d, isDusk){
+  if(!els.causeCard) return;
+  const dusk = isDusk;
+  const midC = dusk ? d.midC : (d.srMid!=null ? d.srMid : null);
+  const highC = dusk ? d.highC : (d.srHigh!=null ? d.srHigh : null);
+  const lowC = dusk ? d.lowC : (d.srLow!=null ? d.srLow : null);
+  const blk = dusk ? d.dirBlock : (d.dirBlockRise!=null ? d.dirBlockRise : null);
+  const hum = dusk ? d.hum : (d.srHum!=null ? d.srHum : null);
+  const vis = dusk ? d.vis : (d.srVis!=null ? d.srVis : null);
+  const precip = dusk ? d.precip : d.srPrecip;
+  const good="var(--good)", warn="var(--warn)", orange="var(--orange)", bad="var(--bad)";
+  const it = (k,v,s,c)=>`<div class="cause-item"><div class="ck">${k}</div><div class="cv">${v}</div><div class="cs"><span class="cs-dot" style="background:${c}"></span>${s}</div></div>`;
+  const items = [];
+  // 中云·画布（高积云等：被阳光从下方照亮的理想画布，scoreCloudMid 理想区间 30-60）
+  if(midC!=null){
+    const s = midC>=30 && midC<=60 ? ["理想画布", good] : (midC<30 ? ["画布偏少", warn] : (midC<=85 ? ["画布偏厚", warn] : ["过厚,压暗", orange]));
+    items.push(it("中云·画布", midC+"%", s[0], s[1]));
+  }
+  // 高云·画布（卷云：夕阳染色层，scoreCloudHigh 高分区间 60-80）
+  if(highC!=null){
+    const s = highC>=60 && highC<=80 ? ["理想染色层", good] : (highC<20 ? ["画布太少", warn] : (highC<=85 ? ["适中", warn] : ["偏厚", orange]));
+    items.push(it("高云·画布", highC+"%", s[0], s[1]));
+  }
+  // 本地低云（低云厚=最大杀手，>55 触发惩罚）
+  if(lowC!=null){
+    const s = lowC>55 ? ["低云压顶,最大杀手", bad] : (lowC>30 ? ["低云偏多", warn] : ["低云少,通透", good]);
+    items.push(it("本地低云", lowC+"%", s[0], s[1]));
+  }
+  // 光路遮挡（日落西侧/日出东侧沿方位角 420km 光路，档位与 dirBlockPenalty 一致）
+  if(blk!=null){
+    const s = blk<30 ? ["开阔无挡", good] : (blk<50 ? ["轻微遮挡", warn] : (blk<70 ? ["明显遮挡", orange] : ["厚云挡光", bad]));
+    items.push(it(dusk?"日落光路":"日出光路", blk+"%", s[0], s[1]));
+  } else {
+    items.push(it(dusk?"日落光路":"日出光路", "--", "预报口径,仅今日实时", warn));
+  }
+  // 大气三项
+  if(hum!=null){
+    const hS = hum>70 ? ["偏高,色彩易发灰", warn] : ["适中,色彩纯", good];
+    items.push(it("相对湿度", hum+"%", hS[0], hS[1]));
+  }
+  if(vis!=null){
+    const vS = vis>=12 ? ["通透", good] : ["欠佳,通透度低", warn];
+    items.push(it("能见度", vis.toFixed(1)+"km", vS[0], vS[1]));
+  }
+  if(precip!=null && precip>0) items.push(it("时段降水", precip+"mm/h", "有雨,雨云压场", bad));
+  else items.push(it("时段降水", "无", "无降水干扰", good));
+  els.causeCard.innerHTML = `<div class="cause-title">成因拆解 · ${dusk?"日落":"日出"}时刻</div>` + items.join("");
+}
+
 function verdictDetail(d, isDusk=true){
   const idx = isDusk ? d.index : (d.srIndex||0);
   const cloud = isDusk ? d.cloud : (d.srCloud!=null ? d.srCloud : d.cloud);
@@ -1895,7 +1954,7 @@ function renderWeek(){
   els.week.innerHTML = state.days.map((d,i)=>{
     const lv = level(d.index);
     const name = i===0 ? "今晚" : WEEK[d.date.getUTCDay()];
-    const lvlCol = lv.t.startsWith("绝佳")?"var(--good)":lv.t.startsWith("机会")?"var(--gold)":lv.t.startsWith("有戏")?"var(--orange)":"var(--ink-3)";
+    const lvlCol = lv.t.startsWith("大烧")?"var(--good)":lv.t.startsWith("中烧")?"var(--orange)":lv.t.startsWith("微烧")?"var(--warn)":"var(--ink-3)";
     const isBest = state.bestDay===i;
     return `<button type="button" class="day ${i===state.selDay?"on":""} ${isBest?"best":""}" data-i="${i}" aria-label="查看${d.date.getUTCMonth()+1}月${d.date.getUTCDate()}日预报，晚霞指数${d.index}，朝霞指数${d.srIndex!=null?d.srIndex:"--"}">
       <div class="dname" style="color:${i===0?"var(--orange)":"var(--ink)"}">${name}${isBest?'<span class="best-tag">最佳</span>':''}</div>
@@ -3608,6 +3667,13 @@ function initAdvPanel(){
   loadCity(state.city);
   // 定时刷新倒计时
   setInterval(()=>{ if(state.days.length) renderHero(); }, 30000);
+  // 数据自动刷新：每 30 分钟静默重拉预报/实况/方向遮挡（与竞品 mcode.cn 同节奏）。
+  // 手动调整参数期间与页面隐藏时跳过，避免打断用户操作
+  setInterval(()=>{
+    if(document.visibilityState==="visible" && !state.manualOn && state.days.length){
+      loadCity(state.city);
+    }
+  }, 1800000);
 })();
 </script>
 </body>
