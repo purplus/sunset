@@ -221,7 +221,7 @@
   .map-base-switch button{border:1px solid rgba(100,200,255,.3);background:rgba(10,14,30,.7);color:#cfe3ff;padding:3px 9px;border-radius:999px;cursor:pointer;font-size:11px}
   .map-base-switch button.on{border-color:#5ec2ff;color:#fff;background:rgba(64,196,255,.22)}
   .pred-city-label span{font-size:9px;color:rgba(235,242,255,0.85);text-shadow:0 1px 2px rgba(0,0,0,0.9);pointer-events:none;white-space:nowrap;transform:translate(-50%,-100%);display:block}
-  .leaflet-overlay-pane svg path{filter: drop-shadow(0 0 3px rgba(0,0,0,0.8))}
+  #leafletMap .leaflet-overlay-pane svg path{filter: drop-shadow(0 0 3px rgba(0,0,0,0.8))}
   .legend-bar{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--ink-2)}
   .legend-bar span{background:var(--panel);padding:4px 8px;border-radius:6px;border:1px solid var(--line-soft)}
   .azimuth-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:6px 0 12px;flex-wrap:wrap}
@@ -798,7 +798,8 @@ function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, dirBlock){
   }
   // 太阳光线方向遮挡（巧摄理念）：日落/日出方位方向被云挡住时，阳光照不过来 → 扣分
   const dirPen = dirBlockPenalty(dirBlock);
-  return Math.round(base + penalty + dyePenalty + thinCirrus + dirPen);
+  // 下限保护：极端条件（低 base + 多项惩罚）可能为负，负数无意义 → clamp 到 0
+  return Math.max(0, Math.round(base + penalty + dyePenalty + thinCirrus + dirPen));
 }
 function level(index){
   if(index<35) return {t:"一般", c:"var(--bad)"};
@@ -2905,7 +2906,7 @@ function drawOwnBase(map, geo, style){
     const land = L.geoJSON(geo, {style:{color:t.border, weight:0.9, fillColor:t.land, fillOpacity:1, interactive:false}});
     land._predBase = true; land.addTo(map);
   }
-  // 城市点 + 名称（矢量，缩放清晰）
+  // 城市点（全部城市）+ 名称（仅 zoom≥5 显示，避免全国视图 107 个名称挤成一团）
   const cities = L.layerGroup();
   const cityList = (typeof REGIONAL_CITIES !== "undefined") ? REGIONAL_CITIES : [];
   cityList.forEach(c=>{
@@ -2913,6 +2914,15 @@ function drawOwnBase(map, geo, style){
     L.marker([c.lat, c.lon], {interactive:false, icon:L.divIcon({className:"pred-city-label", html:"<span>"+c.name+"</span>", iconSize:[0,0]})}).addTo(cities);
   });
   cities._predBase = true; cities.addTo(map);
+  const applyLabelVisibility = ()=>{
+    const show = map.getZoom() >= 5;
+    cities.eachLayer(l=>{
+      if(l instanceof L.Marker) l.setOpacity(show ? 1 : 0);
+    });
+  };
+  map.on("zoomend", applyLabelVisibility);
+  map.on("zoom", applyLabelVisibility);
+  applyLabelVisibility();
   // 热力 overlay 保持置顶
   const ov = (map===predLeaflet) ? predOv : predCloudOv;
   if(ov) ov.bringToFront();
@@ -2969,8 +2979,11 @@ function initPredLeaflets(){
     document.getElementById("predCloudCanvas").style.display = "block";
   }
 }
+// 导出热力层必须保留 alpha 透明（透明区域露出下方的自绘底图）。
+// 注意：不能用有损 webp（lossy webp 无透明通道，会把透明背景编码成不透明黑/深色，
+// 导致整张 overlay 盖住底图 → 图"不可看"）。PNG 完整保留透明通道。
 function exportCanvasToUrl(cv){
-  try{ return cv.toDataURL("image/webp", 0.85); }catch(e){ return cv.toDataURL("image/png"); }
+  try{ return cv.toDataURL("image/png"); }catch(e){ return cv.toDataURL("image/png"); }
 }
 function attachPredOverlay(map, cv, B, key){
   if(!map || !cv) return;
