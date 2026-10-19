@@ -714,12 +714,13 @@ function sunDirBlock(lat, lon, azDeg, grid, LATS, LONS){
   if(wsum === 0) return null;
   return Math.round(total/wsum);
 }
-function dirBlockText(b){
+function dirBlockText(b, isDusk){
+  const dir = isDusk ? "日落" : "日出";
   if(b==null) return {t:"方向遮挡 --", c:"var(--ink-3)"};
-  if(b<30)  return {t:"日落方向开阔", c:"var(--good)"};
-  if(b<50)  return {t:"方向轻微遮挡", c:"var(--warn)"};
-  if(b<70)  return {t:"方向明显遮挡，阳光减弱", c:"var(--orange)"};
-  return {t:"方向被厚云遮挡，阳光难透", c:"var(--bad)"};
+  if(b<30)  return {t: dir+"方向开阔", c:"var(--good)"};
+  if(b<50)  return {t: dir+"方向轻微遮挡", c:"var(--warn)"};
+  if(b<70)  return {t: dir+"方向明显遮挡，阳光减弱", c:"var(--orange)"};
+  return {t: dir+"方向被厚云遮挡，阳光难透", c:"var(--bad)"};
 }
 function dirBlockPenalty(b){
   if(b==null) return 0;
@@ -1266,7 +1267,7 @@ function renderHero(){
 
   // 太阳光线方向遮挡（巧摄理念）：实时网格评估日落/日出方位的云层遮挡
   const db = d.dirBlock, dbr = d.dirBlockRise;
-  const dbT = dirBlockText(db), dbrT = dirBlockText(dbr);
+  const dbT = dirBlockText(db, true), dbrT = dirBlockText(dbr, false);
   els.dirBlockBar.innerHTML = ""
     + `<span class="db-chip" style="color:${dbT.c};border-color:${dbT.c}55;background:${dbT.c}14" title="沿日落方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,false))}°)向外420km光路的实时云况评估，遮挡高=阳光被云挡住">🌇 ${dbT.t}${db!=null?` <b>${db}%</b>`:""}</span>`
     + `<span class="db-chip" style="color:${dbrT.c};border-color:${dbrT.c}55;background:${dbrT.c}14" title="沿日出方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,true))}°)向外420km光路的实时云况评估">🌅 ${dbrT.t}${dbr!=null?` <b>${dbr}%</b>`:""}</span>`
