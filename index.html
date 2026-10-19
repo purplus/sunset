@@ -223,6 +223,10 @@
   .azimuth-info{font-size:12.5px;color:var(--ink-2);line-height:1.7}
   .azimuth-info b{color:var(--gold);font-weight:600}
   .azimuth-info .az-desc{color:var(--ink-3);font-size:11.5px;margin-top:2px}
+  .dirblock-row{display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 10px;align-items:center}
+  .dirblock-row .db-chip{font-size:12px;line-height:1.6;padding:3px 10px;border-radius:999px;border:1px solid;display:inline-flex;align-items:center;gap:6px}
+  .dirblock-row .db-chip b{font-weight:600}
+  .dirblock-row .db-hint{font-size:11px;color:var(--ink-3);margin-left:2px}
 
   /* ===== 7 days ===== */
   .week{display:grid;grid-template-columns:repeat(7,1fr);gap:10px}
@@ -383,6 +387,7 @@
         </div>
       </div>
       <div class="hero-main">
+        <div class="dirblock-row" id="dirBlockBar"></div>
         <div class="verdict" id="verdict"></div>
         <div class="verdict-detail" id="verdictDetail"></div>
         <div class="times">
@@ -662,6 +667,67 @@ function lowCloudBlockPenalty(lowC){
   if(lowC>=45) return -4;
   return 0;
 }
+/* ================= 太阳光线方向遮挡（巧摄理念） =================
+   火烧云的关键不是全天空云量，而是"太阳落点方向"的云是否挡住阳光：
+   即使头顶云量完美，若日落方位的地平线被低云/厚云堵住，阳光照不过来，火烧云不成立。
+   实现：沿日落(或日出)方位角从当前位置向外采样 ~420km，对实时云况网格做双线性插值，
+   近处权重高（地平线附近的低云最关键），加权得方向遮挡度 0-100。 */
+function sampleAlongAzimuth(lat, lon, azDeg, km){
+  const R = 6371, rad = Math.PI/180;
+  const latR = lat*rad, lonR = lon*rad, azR = azDeg*rad;
+  const d = km/R;
+  const la2 = Math.asin(Math.sin(latR)*Math.cos(d) + Math.cos(latR)*Math.sin(d)*Math.cos(azR));
+  const lo2 = lonR + Math.atan2(Math.sin(azR)*Math.sin(d)*Math.cos(latR), Math.cos(d)-Math.sin(latR)*Math.sin(la2));
+  return {lat: la2/rad, lon: ((lo2/rad+540)%360)-180};
+}
+function interpGridVal(grid, LATS, LONS, la, lo, field){
+  // 在程度图 4° 网格上双线性插值指定字段；越界返回 null
+  if(!grid || !LATS || !LONS) return null;
+  let i1=0; while(i1<LATS.length-1 && LATS[i1+1]<=la) i1++;
+  let j1=0; while(j1<LONS.length-1 && LONS[j1+1]<=lo) j1++;
+  if(i1>=LATS.length-1 || j1>=LONS.length-1 || la<LATS[0] || lo<LONS[0]) return null;
+  const la0=LATS[i1], la1=LATS[i1+1], lo0=LONS[j1], lo1=LONS[j1+1];
+  const v00=grid[la0+","+lo0], v10=grid[la1+","+lo0], v01=grid[la0+","+lo1], v11=grid[la1+","+lo1];
+  if(!v00 && !v10 && !v01 && !v11) return null;
+  const f=(la-la0)/(la1-la0||1), g=(lo-lo0)/(lo1-lo0||1);
+  const gv = x => (x && x[field]!=null) ? x[field] : 50;
+  const top=gv(v00)*(1-g)+gv(v01)*g;
+  const bot=gv(v10)*(1-g)+gv(v11)*g;
+  return top*(1-f)+bot*f;
+}
+function sunDirBlock(lat, lon, azDeg, grid, LATS, LONS){
+  // 返回 0-100 方向遮挡度；无网格数据返回 null（不参与扣分）
+  if(!grid || !LATS || !LONS) return null;
+  const kmSteps = [60,120,180,240,300,360,420];
+  const weights = [0.25, 0.22, 0.18, 0.15, 0.10, 0.06, 0.04]; // 近处地平线权重高
+  let total = 0, wsum = 0;
+  kmSteps.forEach((km,i)=>{
+    const p = sampleAlongAzimuth(lat, lon, azDeg, km);
+    const cloud = interpGridVal(grid, LATS, LONS, p.lat, p.lon, "cloud");
+    const lowC  = interpGridVal(grid, LATS, LONS, p.lat, p.lon, "lowC");
+    if(cloud == null) return;
+    // 光路遮挡：总云量为主 + 低云加重（低云贴地平线，直接挡太阳本体）
+    const occl = (lowC!=null) ? Math.min(100, cloud*0.6 + lowC*0.4) : cloud;
+    total += occl * weights[i];
+    wsum += weights[i];
+  });
+  if(wsum === 0) return null;
+  return Math.round(total/wsum);
+}
+function dirBlockText(b){
+  if(b==null) return {t:"方向遮挡 --", c:"var(--ink-3)"};
+  if(b<30)  return {t:"日落方向开阔", c:"var(--good)"};
+  if(b<50)  return {t:"方向轻微遮挡", c:"var(--warn)"};
+  if(b<70)  return {t:"方向明显遮挡，阳光减弱", c:"var(--orange)"};
+  return {t:"方向被厚云遮挡，阳光难透", c:"var(--bad)"};
+}
+function dirBlockPenalty(b){
+  if(b==null) return 0;
+  if(b>=70) return -18;   // 太阳被厚云挡死，火烧云基本不成立
+  if(b>=50) return -10;
+  if(b>=30) return -4;
+  return 0;
+}
 function scoreCloudLow(lowC){
   // 低云：遮挡光线，越少越好
   if(lowC==null) return 50;
@@ -690,7 +756,7 @@ function scoreCloudHigh(highC){
   if(highC < 80) return 100;   // 较多高云
   return 70;                    // 很多高云
 }
-function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC){
+function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, dirBlock){
   // 照搬 sunsetbot 算法：中云主体 + 高云染红 + 低云遮挡 + AOD适中
   const sLow = scoreCloudLow(lowC);
   const sMid = scoreCloudMid(midC);
@@ -708,11 +774,17 @@ function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC){
   let dyePenalty = 0;
   if(dyeCloud < 8) dyePenalty = -35;      // 几乎无云可染 → 强压分
   else if(dyeCloud < 20) dyePenalty = -15; // 云太少 → 中度扣分
-  // 薄卷云惩罚：中云不足但高云很多 → 薄卷云透光强、颜色浅，浓烈度有限
-  // （"干爽晴天高空薄云"场景，色彩远不如中云为主的火烧云）
+  // 薄卷云/高云主导惩罚：中云(厚画布)越少、高云(薄卷云)越多，色彩浓烈度越低。
+  // 连续函数避免硬临界悬崖差（如 mid 9 扣分而 mid 13 不扣）：high-mid 差越大扣越多
   let thinCirrus = 0;
-  if(m < 10 && h >= 60) thinCirrus = (h >= 80) ? -16 : -10;
-  return Math.round(base + penalty + dyePenalty + thinCirrus);
+  if(highC != null && midC != null){
+    if(highC >= 50 && midC < 25){
+      thinCirrus = -Math.round(Math.min(18, (highC - midC) * 0.3));
+    }
+  }
+  // 太阳光线方向遮挡（巧摄理念）：日落/日出方位方向被云挡住时，阳光照不过来 → 扣分
+  const dirPen = dirBlockPenalty(dirBlock);
+  return Math.round(base + penalty + dyePenalty + thinCirrus + dirPen);
 }
 function level(index){
   if(index<35) return {t:"一般", c:"var(--bad)"};
@@ -746,7 +818,7 @@ const els = {
   dateInput:$("dateInput"), todayBtn:$("todayBtn"),
   modelNote:$("modelNote"), cloudChart:$("cloudChart"), chartNote:$("chartNote"),
   heroDate:$("heroDate"), indexNum:$("indexNum"), indexLvl:$("indexLvl"), indexNumSR:$("indexNumSR"), indexLvlSR:$("indexLvlSR"),
-  gaugeArc:$("gaugeArc"), gaugeArcSR:$("gaugeArcSR"), verdict:$("verdict"), verdictDetail:$("verdictDetail"),
+  gaugeArc:$("gaugeArc"), gaugeArcSR:$("gaugeArcSR"), dirBlockBar:$("dirBlockBar"), verdict:$("verdict"), verdictDetail:$("verdictDetail"),
   tSunset:$("tSunset"), tGolden:$("tGolden"), tBlue:$("tBlue"),
   tSunriseIdx:$("tSunriseIdx"), tSunriseTime:$("tSunriseTime"),
   tSunrise:$("tSunrise"), tGoldenSR:$("tGoldenSR"), tBlueSR:$("tBlueSR"),
@@ -1191,6 +1263,14 @@ function renderHero(){
     + " <b>" + state.city.n + "</b>"
     + '<span class="chip" style="background:'+chipColor+'">'+ (isToday?(isDusk?"今晚":"明晨"):"预测") +'</span>'
     + '<span class="chip" style="background:'+chipColor+'">'+stateChip+'</span>';
+
+  // 太阳光线方向遮挡（巧摄理念）：实时网格评估日落/日出方位的云层遮挡
+  const db = d.dirBlock, dbr = d.dirBlockRise;
+  const dbT = dirBlockText(db), dbrT = dirBlockText(dbr);
+  els.dirBlockBar.innerHTML = ""
+    + `<span class="db-chip" style="color:${dbT.c};border-color:${dbT.c}55;background:${dbT.c}14" title="沿日落方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,false))}°)向外420km光路的实时云况评估，遮挡高=阳光被云挡住">🌇 ${dbT.t}${db!=null?` <b>${db}%</b>`:""}</span>`
+    + `<span class="db-chip" style="color:${dbrT.c};border-color:${dbrT.c}55;background:${dbrT.c}14" title="沿日出方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,true))}°)向外420km光路的实时云况评估">🌅 ${dbrT.t}${dbr!=null?` <b>${dbr}%</b>`:""}</span>`
+    + `<span class="db-hint">巧摄理念 · 实时光路遮挡</span>`;
 
   // 主盘 = viewType 类型；次盘 = 另一类型
   const duskIdx = d.index, dawnIdx = d.srIndex || 0;
@@ -2656,7 +2736,7 @@ async function renderPredictionMap(){
       const cloud = c.cloud_cover!=null?c.cloud_cover: Math.max(lowC, midC, highC);
       // 与首页彩霞指数同一打分口径（湿度/能见度/风/AOD 取典型值，云层结构差异主导评分）
       const vivid = computeIndex(cloud, 60, 20, 10, 0.25, lowC, midC, highC);
-      return {vivid, cloud};
+      return {vivid, cloud, lowC};
     };
     const fetchBatch = async (pts)=>{
       const ac = new AbortController();
@@ -2677,6 +2757,7 @@ async function renderPredictionMap(){
       drawPredictionCanvas(cv, predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo, predMapCache.cityIdx);
       if(tag) tag.textContent = "程度图 · 实时云况（与彩霞指数同口径，缓存 "+(predMapCache.ts>0?Math.round((Date.now()-predMapCache.ts)/60000):0)+" 分钟前）";
       if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 实时云况";
+      applySunDirBlock();
       return;
     }
     // 顺序分批发（每批失败重试一次）
@@ -2730,10 +2811,38 @@ async function renderPredictionMap(){
     drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx);
     if(tag) tag.textContent = "程度图 · 实时云况（与彩霞指数同口径）";
     if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 实时云况";
+    // 云况网格就绪后：评估太阳光线方向遮挡（巧摄理念），并入今日指数
+    applySunDirBlock();
   }catch(e){
     console.error("pred map err:", e);
     if(tag) tag.textContent = "生成失败，请刷新重试";
   }
+}
+
+// 用实时云况网格评估"今日"日落/日出方向遮挡（巧摄理念：太阳方位被云挡住 → 阳光照不过来）
+// 只对今日生效（未来天无实时网格可评估）；手动调整模式下只展示遮挡、不改指数
+function applySunDirBlock(){
+  if(!predMapCache || !state.city || !state.days || !state.days[0]) return;
+  const d = state.days[0];
+  const lat = state.city.lat, lon = state.city.lon;
+  const tz = state.city.tz;
+  const azSet = sunAzimuth(lat, lon, d.date, tz, false);
+  const azRise = sunAzimuth(lat, lon, d.date, tz, true);
+  const grid = predMapCache.grid, LATS = predMapCache.LATS, LONS = predMapCache.LONS;
+  const blkSet = sunDirBlock(lat, lon, azSet, grid, LATS, LONS);
+  const blkRise = sunDirBlock(lat, lon, azRise, grid, LATS, LONS);
+  d.dirBlock = blkSet;
+  d.dirBlockRise = blkRise;
+  const elev = state.city.elev;
+  const elevBonus = elev!=null ? (elev>=2000?5:elev>=1000?3:0) : 0;
+  if(!state.manualOn){
+    d.index = Math.min(100, computeIndex(d.cloud, d.hum, d.vis, d.wind, d.aod, d.lowC, d.midC, d.highC, blkSet) + elevBonus);
+    if(d.srIndex != null){
+      d.srIndex = Math.min(100, computeIndex(d.srCloud, d.srHum, d.srVis, d.srWind, d.srAOD, d.srLow, d.srMid, d.srHigh, blkRise) + elevBonus);
+    }
+  }
+  renderHero();
+  renderWeek();
 }
 
 /* ---- 实时云量图：白色=有云，透明=无云（canvas 插值渲染） ---- */
