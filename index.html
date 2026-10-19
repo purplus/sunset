@@ -991,25 +991,39 @@ async function fetchOpenMeteo(lat, lon, model){
     + "&forecast_days="+days+"&timezone=auto";
   if(model==="gfs") url += "&models=gfs_global";
   else if(model==="ec") url += "&models=ecmwf_ifs025";
-  const [res, aodRes] = await Promise.all([
-    fetch(url),
-    fetch("https://air-quality-api.open-meteo.com/v1/air-quality?latitude="+lat+"&longitude="+lon
-      + "&hourly=aerosol_optical_depth&timezone=auto&forecast_days=5")
-  ]);
+  // 主请求：15s 超时兜底（弱网/限流时快速失败给出明确错误，而不是长时间挂起）
+  const ac = new AbortController();
+  const t = setTimeout(()=>ac.abort(), 15000);
+  let res;
+  try{
+    res = await fetch(url, {signal: ac.signal});
+  }catch(e){
+    clearTimeout(t);
+    throw new Error("open-meteo network/timeout: "+(e.name==="AbortError"?"15s超时":e.message));
+  }
+  clearTimeout(t);
   if(!res.ok) throw new Error("open-meteo fetch failed "+res.status);
   const w = await res.json();
   // 实时海拔 + 真实时区：Open-Meteo 返回 elevation 和 utc_offset_seconds（秒）
   if(w.elevation!=null) state.city.elev = w.elevation;
   if(w.utc_offset_seconds!=null) state.city.tz = w.utc_offset_seconds;
-  // 把 AOD 按小时对齐合并进来
-  if(aodRes.ok){
-    const aq = await aodRes.json();
-    if(aq.hourly && aq.hourly.time){
-      const aodMap = {};
-      aq.hourly.time.forEach((t,i)=>{ aodMap[t] = aq.hourly.aerosol_optical_depth ? aq.hourly.aerosol_optical_depth[i] : null; });
-      w.hourly.aerosol_optical_depth = w.hourly.time.map(t => aodMap[t]!=null ? aodMap[t] : null);
+  // AOD（气溶胶光学厚度）独立降级：它只是"通透度"加分项，
+  // 移动网络下 air-quality-api 子域慢/失败绝不影响主预报与实况条——失败按 AOD 缺失处理
+  try{
+    const ac2 = new AbortController();
+    const t2 = setTimeout(()=>ac2.abort(), 10000);
+    const aodRes = await fetch("https://air-quality-api.open-meteo.com/v1/air-quality?latitude="+lat+"&longitude="+lon
+      + "&hourly=aerosol_optical_depth&timezone=auto&forecast_days=5", {signal: ac2.signal});
+    clearTimeout(t2);
+    if(aodRes.ok){
+      const aq = await aodRes.json();
+      if(aq.hourly && aq.hourly.time){
+        const aodMap = {};
+        aq.hourly.time.forEach((t3,i)=>{ aodMap[t3] = aq.hourly.aerosol_optical_depth ? aq.hourly.aerosol_optical_depth[i] : null; });
+        w.hourly.aerosol_optical_depth = w.hourly.time.map(t4 => aodMap[t4]!=null ? aodMap[t4] : null);
+      }
     }
-  }
+  }catch(e){ /* AOD 失败不致命，忽略 */ }
   if(!w.hourly.aerosol_optical_depth) w.hourly.aerosol_optical_depth = w.hourly.time.map(()=>null);
   return w;
 }
@@ -2170,15 +2184,31 @@ async function loadCity(city){
     state.isFallback = false;
   }catch(e){
     if(mySeq !== state._loadSeq) return;
-    state.weatherOK = false;
-    state.isFallback = true;
-    state.liveWeather = null;
-    state.days = buildDaysFallback(city);
+    // Windy 源失败 → 真正回退 Open-Meteo（而不是直接上模拟值），Open-Meteo 再失败才用模拟值
     if(src==="windy"){
-      showToast(getWindyKey()
-        ? "Windy 数据获取失败（Key 无效 / 该模型无此变量 / 网络或 CORS 限制），已回退 Open-Meteo"
-        : "尚未配置 Windy Key，已回退 Open-Meteo。点「Windy Key」填入 Key 后切换");
+      try{
+        const w2 = await fetchOpenMeteo(city.lat, city.lon, state.model);
+        if(mySeq !== state._loadSeq) return;
+        state.days = buildDays(w2);
+        state.liveWeather = (w2 && w2.current) ? w2.current : null;
+        state.weatherOK = true;
+        state.isFallback = false;
+        showToast(getWindyKey()
+          ? "Windy 数据获取失败（Key 无效 / 该模型无此变量 / 网络或 CORS 限制），已回退 Open-Meteo"
+          : "尚未配置 Windy Key，已回退 Open-Meteo。点「Windy Key」填入 Key 后切换");
+      }catch(e2){
+        if(mySeq !== state._loadSeq) return;
+        state.weatherOK = false;
+        state.isFallback = true;
+        state.liveWeather = null;
+        state.days = buildDaysFallback(city);
+        showToast("Windy 与 Open-Meteo 均失败，已切换到手动预估模式");
+      }
     }else{
+      state.weatherOK = false;
+      state.isFallback = true;
+      state.liveWeather = null;
+      state.days = buildDaysFallback(city);
       showToast("实时天气获取失败，已切换到手动预估模式");
     }
   }
