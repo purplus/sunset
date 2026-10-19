@@ -2122,15 +2122,27 @@ const SAT_ROW0 = 10, SAT_ROW1 = 14;                   // 中国纬度 54~18
 const SAT_BOUNDS = {la0:18, la1:54, lo0:73, lo1:135}; // 中国主体范围（绘图裁剪）
 const SAT_TIME_STEP_MS = 30 * 60 * 1000;               // 时间轴步长 30 分钟
 const SAT_LAYERS = {
-  vis: { id:"Band3_Red_Visible_1km",  tms:"GoogleMapsCompatible_Level7", label:"可见光",  dayOnly:true },
-  ir:  { id:"Band13_Clean_Infrared",  tms:"GoogleMapsCompatible_Level6", label:"红外",    dayOnly:false },
-  air: { id:"Himawari_AHI_Air_Mass",  tms:"GoogleMapsCompatible_Level6", label:"气团",    dayOnly:false }
+  // 注意：GIBS 2025 年对 Himawari 产品重命名，旧 ID(Band3_Red_Visible_1km/Band13_Clean_Infrared)已失效返回 LAYER does not exist
+  vis: { id:"Himawari_AHI_Band3_Red_Visible_1km", tms:"GoogleMapsCompatible_Level7", label:"可见光",  dayOnly:true },
+  ir:  { id:"Himawari_AHI_Band13_Clean_Infrared", tms:"GoogleMapsCompatible_Level6", label:"红外",    dayOnly:false },
+  air: { id:"Himawari_AHI_Air_Mass",              tms:"GoogleMapsCompatible_Level6", label:"气团",    dayOnly:false }
 };
 let satType = "dusk";                                  // dawn=朝霞(日出等时线) dusk=晚霞(日落等时线)
 let satLayer = "vis";                                  // vis/ir/air；默认可见光，夜间自动降级
 let satLayerAutoFallback = false;                      // 是否已发生自动降级
+let satSeq = 0;                                        // 卫星渲染序号：切换图层/时间时作废旧加载，防止竞态吞掉切换
 let satFrame = null;                                   // 当前帧时间字符串
 let satLoading = false;
+
+// 图层按钮高亮与实际 satLayer 同步（自动降级后也必须更新按钮）
+function updateSatLayerUI(){
+  document.querySelectorAll("#satLayerBar .chip").forEach(x=>{
+    const on = x.dataset.layer === satLayer;
+    x.style.borderColor = on ? "#5ec2ff" : "rgba(100,200,255,.3)";
+    x.style.color = on ? "#ffffff" : "#cfe3ff";
+    x.style.background = on ? "rgba(64,196,255,.18)" : "var(--panel)";
+  });
+}
 
 // Web Mercator：经纬度 → 该级别瓦片坐标（浮点）
 function webMercTile(lat, lon, z){
@@ -2194,6 +2206,7 @@ async function renderSatMap(){
   const bar = document.getElementById("satTimeBar");
   if(!cv || !tag) return;
   if(satLoading) return;
+  const mySeq = ++satSeq;
   satLoading = true;
   tag.textContent = "正在获取卫星云图…";
   try{
@@ -2203,12 +2216,14 @@ async function renderSatMap(){
       if(satLayer === "vis" && visNowLikelyNight()){
         satLayer = "ir";
         satLayerAutoFallback = true;
+        updateSatLayerUI();
         tag.textContent = "当前为夜晚，可见光无数据，已自动切换红外图层…";
         satLoading = false;
         await renderSatMap();
         return;
       }
       const f = await probeLatestSatFrame();
+      if(mySeq !== satSeq){ return; }
       if(!f){
         // 当前图层无数据：沿 vis→ir→air 降级链逐级切换
         const next = fallbackSatLayer();
@@ -2216,6 +2231,7 @@ async function renderSatMap(){
           const prev = satLayer;
           satLayer = next;
           satLayerAutoFallback = true;
+          updateSatLayerUI();
           tag.textContent = prev==="vis" ? "当前时段可见光无数据，已切换红外图层…" : "红外图层暂不可用，已切换气团图层…";
           satFrame = null;
           satLoading = false;
@@ -2225,11 +2241,13 @@ async function renderSatMap(){
         tag.textContent = "卫星云图暂不可用，请稍后重试";
         satLoading=false; return;
       }
+      if(mySeq !== satSeq){ return; }
       satFrame = f;
       // 可见光帧不在白天时段：自动降级红外
       if(satLayer === "vis" && !visHasDaylight(f)){
         satLayer = "ir";
         satLayerAutoFallback = true;
+        updateSatLayerUI();
         tag.textContent = "当前时段为夜晚，可见光无数据，已自动切换红外图层…";
         satFrame = null;
         satLoading = false;
@@ -2246,11 +2264,12 @@ async function renderSatMap(){
           btn.dataset.time = t.toISOString().replace(/\.\d+Z$/,"Z");
           btn.style.cssText = "font-size:11px;padding:3px 9px;border-radius:999px;cursor:pointer;border:1px solid rgba(100,200,255,.3);background:rgba(10,14,30,.7);color:#cfe3ff";
           if(k===0) btn.style.background = "rgba(64,196,255,.25)";
-          btn.onclick = ()=>{ satFrame = btn.dataset.time; renderSatMap(); };
+          btn.onclick = ()=>{ switchSatFrame(btn.dataset.time); };
           bar.appendChild(btn);
         }
       }
     }
+    if(mySeq !== satSeq){ return; }
     // 并行加载 35 瓦片
     const L = SAT_LAYERS[satLayer];
     const tiles = [];
@@ -2284,6 +2303,7 @@ async function renderSatMap(){
       if(bi+BATCH < flat.length) await new Promise(r=>setTimeout(r, BATCH_GAP));
     }
     const good = imgs.filter(Boolean).length;
+    if(mySeq !== satSeq){ return; }
     // 瓦片几乎全失败（可能目标时段/图层异常）：沿降级链切换
     if(good === 0){
       const next = fallbackSatLayer();
@@ -2291,6 +2311,7 @@ async function renderSatMap(){
         const prev = satLayer;
         satLayer = next;
         satLayerAutoFallback = true;
+        updateSatLayerUI();
         tag.textContent = prev==="vis" ? "可见光云图加载失败，已切换红外图层…" : "红外云图加载失败，已切换气团图层…";
         satFrame = null;
         satLoading = false;
@@ -2405,32 +2426,38 @@ async function renderSatMap(){
     ctx.restore();
     // 时间戳
     tag.textContent = satFrame ? (SAT_LAYERS[satLayer].label + "·葵花9 " + satFrame.slice(0,16).replace("T"," ") + (satLayerAutoFallback ? "（已自动降级）" : "")) : "卫星云图";
+    updateSatLayerUI();
   } catch(e){
     tag.textContent = "卫星云图加载失败";
   } finally {
-    satLoading = false;
+    if(mySeq === satSeq) satLoading = false;   // 仅当前加载可释放占用，被作废的加载不动标志
   }
+}
+
+// 切换卫星图层（可见光/红外/气团）：作废旧加载后立即重启
+function switchSatLayer(layer){
+  if(satLayer === layer) { updateSatLayerUI(); return; }
+  satSeq++;                 // 作废正在进行的加载
+  satLoading = false;       // 解除占用，允许新加载立即启动
+  satLayer = layer;
+  satLayerAutoFallback = false;
+  satFrame = null;
+  updateSatLayerUI();
+  renderSatMap();
+}
+// 切换卫星时间帧：同样作废旧加载
+function switchSatFrame(timeIso){
+  satSeq++;
+  satLoading = false;
+  satFrame = timeIso;
+  renderSatMap();
 }
 
 // 卫星图：朝霞/晚霞切换 + 图层切换
 function initSat(){
   // 图层切换（可见光/红外/气团）
   document.querySelectorAll("#satLayerBar .chip").forEach(b=>{
-    b.addEventListener("click", ()=>{
-      if(satLayer === b.dataset.layer) return;
-      document.querySelectorAll("#satLayerBar .chip").forEach(x=>{
-        x.style.borderColor = "rgba(100,200,255,.3)";
-        x.style.color = "#cfe3ff";
-        x.style.background = "var(--panel)";
-      });
-      b.style.borderColor = "#5ec2ff";
-      b.style.color = "#ffffff";
-      b.style.background = "rgba(64,196,255,.18)";
-      satLayer = b.dataset.layer;
-      satLayerAutoFallback = false;
-      satFrame = null;
-      renderSatMap();
-    });
+    b.addEventListener("click", ()=> switchSatLayer(b.dataset.layer));
   });
   document.querySelectorAll("#satControls .chip").forEach(b=>{
     b.addEventListener("click", ()=>{
@@ -2442,8 +2469,7 @@ function initSat(){
       b.style.borderColor = "#5ec2ff";
       b.style.color = "#ffffff";
       satType = b.dataset.sattype;
-      satFrame = null;
-      renderSatMap();
+      switchSatFrame(null);
     });
   });
   // 页面加载后渲染
