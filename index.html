@@ -2989,7 +2989,7 @@ function attachPredOverlay(map, cv, B, key){
 function drawCloudCanvas(cv, grid, LATS, LONS, geo){
   if(!cv) return;
   const BOUNDS = {la0:3, la1:54, lo0:73, lo1:135};
-  const W = 900, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
+  const W = 1800, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
   const dpr = Math.min(window.devicePixelRatio||1, 2);
   cv.width = W*dpr; cv.height = H*dpr;
   cv.style.aspectRatio = W+"/"+H;
@@ -3010,7 +3010,7 @@ function drawCloudCanvas(cv, grid, LATS, LONS, geo){
     return top*(1-f)+bot*f;
   };
   // 白=云量 100% 透明=0%（省界/网格/城市名由自绘底图提供，这里只画云层避免重复）
-  const STEP = 6;
+  const STEP = 3;
   for(let yy=0; yy<H; yy+=STEP){
     const la = mercRowLat(H, BOUNDS, yy, STEP);
     for(let xx=0; xx<W; xx+=STEP){
@@ -3023,9 +3023,9 @@ function drawCloudCanvas(cv, grid, LATS, LONS, geo){
     }
   }
   ctx.fillStyle = "rgba(255,255,255,0.45)";
-  ctx.font = "9px system-ui, sans-serif";
+  ctx.font = "18px system-ui, sans-serif";
   ctx.textAlign = "right";
-  ctx.fillText("南海诸岛", W-8, H-6);
+  ctx.fillText("南海诸岛", W-16, H-12);
   // 贴到 Leaflet 自绘底图（已初始化时）；未初始化则 canvas 兜底可见
   if(predCloudLeaflet) attachPredOverlay(predCloudLeaflet, cv, BOUNDS, "cloud");
 }
@@ -3034,7 +3034,7 @@ function drawCloudCanvas(cv, grid, LATS, LONS, geo){
 function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
   // 尺寸：中国范围 lat 3~54, lon 73~135（含南海诸岛）
   const BOUNDS = {la0:3, la1:54, lo0:73, lo1:135};
-  const W = 900, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
+  const W = 1800, H = Math.round(W * (BOUNDS.la1-BOUNDS.la0) / (BOUNDS.lo1-BOUNDS.lo0) * 1.25);
   const dpr = Math.min(window.devicePixelRatio||1, 2);
   cv.width = W*dpr; cv.height = H*dpr;
   cv.style.aspectRatio = W+"/"+H;
@@ -3093,7 +3093,7 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     drawGeo(mctx);
     mctx.fill("evenodd");
     // 热力画在主 canvas
-    const STEP = 6;
+    const STEP = 3;
     for(let yy=0; yy<H; yy+=STEP){
       const la = mercRowLat(H, BOUNDS, yy, STEP);
       for(let xx=0; xx<W; xx+=STEP){
@@ -3112,7 +3112,7 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     // （省界/网格/城市名由自绘底图矢量提供，overlay 不再重复绘制）
   } else {
     // 无 GeoJSON：直接画热力 + 简化边框
-    const STEP = 6;
+    const STEP = 3;
     for(let yy=0; yy<H; yy+=STEP){
       const la = mercRowLat(H, BOUNDS, yy, STEP);
       for(let xx=0; xx<W; xx+=STEP){
@@ -3124,7 +3124,7 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
       }
     }
     ctx.strokeStyle = "rgba(255,255,255,0.4)";
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 3;
     ctx.strokeRect(0, 0, W, H);
   }
   // 日落等时线（虚线，沿经度标注各地日落时刻；参考图“虚线=各地日落等时线”）
@@ -3132,9 +3132,9 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     const dateForIso = (state && state.days && state.days[state.selDay] && state.days[state.selDay].time) ? new Date(state.days[state.selDay].time+"T00:00:00Z") : new Date();
     ctx.save();
     ctx.strokeStyle = "rgba(255,255,255,0.4)";
-    ctx.setLineDash([5,4]);
-    ctx.lineWidth = 1;
-    ctx.font = "9px system-ui, sans-serif";
+    ctx.setLineDash([10,8]);
+    ctx.lineWidth = 2;
+    ctx.font = "18px system-ui, sans-serif";
     ctx.fillStyle = "rgba(255,255,255,0.7)";
     ctx.textAlign = "left";
     const iso = {};
@@ -3152,13 +3152,13 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
       const hh = String(Math.floor(half/60)).padStart(2,"0");
       const mm = String(half%60).padStart(2,"0");
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-      ctx.fillText("日落"+hh+":"+mm, x+3, H-6);
+      ctx.fillText("日落"+hh+":"+mm, x+6, H-12);
     });
     ctx.restore();
   }catch(e){}
   // 逐格百分比数值（8° 网格点标注，参考图逐格百分比）
   ctx.save();
-  ctx.font = "9px system-ui, sans-serif";
+  ctx.font = "18px system-ui, sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.55)";
   ctx.textAlign = "center";
   for(let i=0;i<LATS.length;i+=2){
@@ -3166,7 +3166,7 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
       const la=LATS[i], lo=LONS[j];
       const v = interp(la, lo);
       if(v==null) continue;
-      ctx.fillText(Math.round(v)+"%", px(lo), py(la)+3);
+      ctx.fillText(Math.round(v)+"%", px(lo), py(la)+6);
     }
   }
   ctx.restore();
@@ -3177,11 +3177,11 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
     if(v!=null && typeof v === "object") v = v.vivid;
     if(v==null) return;
     ctx.beginPath();
-    ctx.arc(x, y, 6, 0, Math.PI*2);
+    ctx.arc(x, y, 12, 0, Math.PI*2);
     ctx.fillStyle = vividColor(v).replace(/[^,]+\)$/, "1)");
     ctx.fill();
     ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1.4;
+    ctx.lineWidth = 2.8;
     ctx.stroke();
   });
   // 太阳光线方向遮挡光路叠加（巧摄理念）：画出当前城市今日日落/日出方位的 7 个采样点
@@ -3191,9 +3191,9 @@ function drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx){
   }
   // 南海诸岛小图（简化标注）
   ctx.fillStyle = "rgba(255,255,255,0.5)";
-  ctx.font = "9px system-ui, sans-serif";
+  ctx.font = "18px system-ui, sans-serif";
   ctx.textAlign = "right";
-  ctx.fillText("南海诸岛", W-8, H-6);
+  ctx.fillText("南海诸岛", W-16, H-12);
   // 贴到 Leaflet 真实底图（已初始化时）；未初始化则 canvas 兜底可见
   if(predLeaflet) attachPredOverlay(predLeaflet, cv, BOUNDS, "pred");
 }
@@ -3214,8 +3214,8 @@ function drawSunDirOnPred(ctx, W, H, px, py){
     ctx.save();
     ctx.strokeStyle = b.color;
     ctx.globalAlpha = 0.55;
-    ctx.lineWidth = 1.3;
-    ctx.setLineDash([4,4]);
+    ctx.lineWidth = 2.6;
+    ctx.setLineDash([8,8]);
     ctx.beginPath();
     ctx.moveTo(cxp, cyp);
     const pts = [];
@@ -3231,29 +3231,29 @@ function drawSunDirOnPred(ctx, W, H, px, py){
     pts.forEach(pt=>{
       if(pt.x<-5||pt.x>W+5||pt.y<-5||pt.y>H+5) return;
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI*2);
+      ctx.arc(pt.x, pt.y, 7, 0, Math.PI*2);
       ctx.fillStyle = b.color;
       ctx.fill();
       ctx.strokeStyle = "rgba(10,14,30,.9)";
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 2.8;
       ctx.stroke();
-      ctx.font = "9px system-ui, sans-serif";
+      ctx.font = "18px system-ui, sans-serif";
       ctx.fillStyle = b.color;
       ctx.textAlign = "left";
-      ctx.fillText(pt.km+"km", pt.x+5, pt.y-5);
+      ctx.fillText(pt.km+"km", pt.x+10, pt.y-10);
     });
     // 城市锚点 + 方位标签
     ctx.beginPath();
-    ctx.arc(cxp, cyp, 5, 0, Math.PI*2);
+    ctx.arc(cxp, cyp, 10, 0, Math.PI*2);
     ctx.fillStyle = "#fff";
     ctx.fill();
     ctx.strokeStyle = b.color;
-    ctx.lineWidth = 1.6;
+    ctx.lineWidth = 3.2;
     ctx.stroke();
-    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.font = "600 22px system-ui, sans-serif";
     ctx.fillStyle = b.color;
     ctx.textAlign = "center";
-    const labelY = cyp - 14;
+    const labelY = cyp - 28;
     ctx.fillText(b.icon+" "+city.n+" "+b.label, cxp, labelY);
   });
 }
