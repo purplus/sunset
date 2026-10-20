@@ -833,12 +833,35 @@ function renderLiveWeather(){
   if(c.cloud_cover!=null) items.push('<span class="lw-item">云量'+c.cloud_cover+'%</span>');
   if(c.precipitation!=null && c.precipitation > 0)
     items.push('<span class="lw-item">降水'+c.precipitation+'mm</span>');
+  // 【卫星实况交叉验证】模型报晴但卫星云图实际有云时，明确标注（以卫星图为准）
+  if(satDirGrid && state.city && c.cloud_cover!=null){
+    const satC = getSatCloudAt(state.city.lat, state.city.lon);
+    if(satC!=null && satC >= 30 && c.cloud_cover <= 15){
+      items.push('<span class="lw-item" style="color:#ffb84d">⚠️ 卫星图有云'+satC+'% · 模型报'+c.cloud_cover+'%，以卫星为准</span>');
+    }
+  }
   // 实况时间：current.time 形如 "2026-10-19T18:32+08:00"，直接取其本地时分（城市时区）
   if(c.time){
     const m = /T(\d{2}:\d{2})/.exec(c.time);
     if(m) items.push('<span class="lw-time">实况 '+m[1]+'</span>');
   }
   els.liveWeather.innerHTML = items.join(' · ');
+}
+// 从卫星反演网格双线性插值取观测点云量（0-100）
+function getSatCloudAt(lat, lon){
+  const g = satDirGrid;
+  if(!g || !g.grid || !g.LATS || !g.LONS) return null;
+  const LATS = g.LATS, LONS = g.LONS;
+  if(lat < LATS[0] || lat > LATS[LATS.length-1] || lon < LONS[0] || lon > LONS[LONS.length-1]) return null;
+  let i1=0; while(i1<LATS.length-1 && LATS[i1+1]<=lat) i1++;
+  let j1=0; while(j1<LONS.length-1 && LONS[j1+1]<=lon) j1++;
+  const la0=LATS[i1], la1=LATS[i1+1], lo0=LONS[j1], lo1=LONS[j1+1];
+  const a=g.grid[la0+","+lo0], b=g.grid[la1+","+lo0], cc=g.grid[la0+","+lo1], d=g.grid[la1+","+lo1];
+  if((a==null)&&(b==null)&&(cc==null)&&(d==null)) return null;
+  const f=(lat-la0)/(la1-la0||1), gg=(lon-lo0)/(lo1-lo0||1);
+  const top=(a?a.cloud:0)*(1-gg)+(cc?cc.cloud:0)*gg;
+  const bot=(b?b.cloud:0)*(1-gg)+(d?d.cloud:0)*gg;
+  return Math.round(top*(1-f)+bot*f);
 }
 function scoreCloudLow(lowC){
   // 低云：遮挡光线，越少越好
@@ -3467,6 +3490,7 @@ function applySunDirBlock(src, skipRender){
   if(!skipRender){
     renderHero();
     renderWeek();
+    renderLiveWeather();   // 卫星网格就绪后重算"卫星 vs 模型"交叉标注
   }
 }
 
