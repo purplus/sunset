@@ -349,7 +349,7 @@
           <button data-m="ec">ECMWF</button>
         </div>
       </div>
-      <span class="model-note" id="modelNote">综合多源预报（Open-Meteo 最佳匹配）</span>
+      <span class="model-note" id="modelNote">综合=EC60%+GFS40% 独立评分平均</span>
       <div class="key-wrap" id="keyWrap">
         <button id="keyBtn" class="btn-loc"><span class="key-dot" id="keyDot"></span>Windy Key</button>
         <div class="keypanel" id="keyPanel" style="display:none">
@@ -945,6 +945,7 @@ let state = {
   isFallback: false,       // 数据获取失败时使用模拟值
   model: "default",       // default / gfs / ec
   source: "om",           // windy / om
+  ensDays: null,          // 综合模式下 [EC days, GFS days] 快照（光路修正时需分别重算再平均）
   _loadSeq: 0             // 城市加载请求序号（防异步竞态）
 };
 function getWindyKey(){ try{ return localStorage.getItem(KEY_STORE)||""; }catch(e){ return ""; } }
@@ -978,6 +979,17 @@ const els = {
 async function fetchWeather(lat, lon, model, source){
   if(source==="windy") return fetchWindy(lat, lon, model);
   if(source==="met") return fetchMetNorway(lat, lon);
+  if(model==="default"){
+    // 【综合 ≠ 缝合】Open-Meteo 的 seamless"综合"是按"变量+时刻"从不同模式取最优值拼出来的，
+    // 会缝合出物理上不可能存在的云况组合（如 GFS 晴空 + EC 中云 → "中云59+高云73"的理想画布 → 虚高 90）。
+    // 因此"综合"改为：EC 与 GFS 各取完整数据、各自独立评分后再加权平均（EC 为主 0.6 / GFS 0.4），
+    // 每个模型内部物理自洽，杜绝"缝合云况"虚高。
+    const [wEC, wGFS] = await Promise.all([
+      fetchOpenMeteo(lat, lon, "ec"),
+      fetchOpenMeteo(lat, lon, "gfs")
+    ]);
+    return {__ensemble:[wEC, wGFS], __primary:wEC};
+  }
   return fetchOpenMeteo(lat, lon, model);
 }
 async function fetchOpenMeteo(lat, lon, model, _retry){
@@ -1957,7 +1969,7 @@ function renderCloudCurve(day){
     note.textContent = "";
     return;
   }
-  const modelName = {default:"综合", gfs:"GFS", ec:"ECMWF"}[state.model]||"综合";
+  const modelName = {default:"综合(EC60%+GFS40%)", gfs:"GFS", ec:"ECMWF"}[state.model]||"综合";
   const srcName = {windy:"Windy", om:"Open-Meteo", met:"MET Norway"}[state.source]||"Open-Meteo";
   note.textContent = srcName+" · "+modelName+" 预报 · "+fmtDate(day.date)+" · 竖线为日落";
   const W=640, H=224, P=16, RP=14, TB=22, BB=26;
@@ -2203,7 +2215,7 @@ async function loadCity(city){
   try{
     const w = await fetchWeather(city.lat, city.lon, state.model, src);
     if(mySeq !== state._loadSeq) return;   // 已被更新的请求取代，丢弃本次结果
-    state.days = buildDays(w);
+    state.days = buildEnsembleDays(w);
     state.liveWeather = (w && w.current) ? w.current : null;   // 当地此时天气实况
     state.weatherOK = true;
     state.isFallback = false;
@@ -2214,6 +2226,7 @@ async function loadCity(city){
       try{
         const w2 = await fetchOpenMeteo(city.lat, city.lon, state.model);
         if(mySeq !== state._loadSeq) return;
+        state.ensDays = null;   // 单模型回退，无 ensemble 快照
         state.days = buildDays(w2);
         state.liveWeather = (w2 && w2.current) ? w2.current : null;
         state.weatherOK = true;
@@ -2223,6 +2236,7 @@ async function loadCity(city){
           : "尚未配置 Windy Key，已回退 Open-Meteo。点「Windy Key」填入 Key 后切换");
       }catch(e2){
         if(mySeq !== state._loadSeq) return;
+        state.ensDays = null;
         state.weatherOK = false;
         state.isFallback = true;
         state.liveWeather = null;
@@ -2230,6 +2244,7 @@ async function loadCity(city){
         showToast("Windy 与 Open-Meteo 均失败，已切换到手动预估模式");
       }
     }else{
+      state.ensDays = null;
       state.weatherOK = false;
       state.isFallback = true;
       state.liveWeather = null;
@@ -2248,6 +2263,34 @@ async function loadCity(city){
   if(mySeq !== state._loadSeq) return;
   els.loading.style.display = "none";
   renderSelect(); renderLiveWeather(); renderHero(); renderWeek(); syncManual(); updateWindyMap(); updateLeafletMap(); renderPredictionMap();
+}
+
+/* ---- 综合模型：各模型独立评分后加权平均（EC 0.6 / GFS 0.4）---- */
+function buildEnsembleDays(w){
+  if(!(w && w.__ensemble)){
+    state.ensDays = null;
+    return buildDays(w);
+  }
+  try{
+    const dEC  = buildDays(w.__ensemble[0]);
+    const dGFS = buildDays(w.__ensemble[1]);
+    const n = Math.min(dEC.length, dGFS.length);
+    for(let i=0; i<n; i++){
+      const a = dEC[i], b = dGFS[i];
+      if(a.index!=null && b.index!=null) a.index = Math.round(a.index*0.6 + b.index*0.4);
+      else if(a.index==null && b.index!=null) a.index = b.index;
+      if(a.srIndex!=null && b.srIndex!=null) a.srIndex = Math.round(a.srIndex*0.6 + b.srIndex*0.4);
+      else if(a.srIndex==null && b.srIndex!=null) a.srIndex = b.srIndex;
+      // 展示层数据（云况/湿度/图表/光路等）保留 EC（主模型）值
+    }
+    // 保存两个模型的完整 days 快照：光路修正（applySunDirBlock）必须对两模型分别重算再平均，
+    // 否则会用 EC 单模型的云况覆盖 ensemble 平均结果
+    state.ensDays = [dEC, dGFS];
+    return dEC;
+  }catch(e){
+    state.ensDays = null;
+    return buildDays(w.__primary || w);
+  }
 }
 
 function buildDaysFallback(city){
@@ -3358,9 +3401,26 @@ function applySunDirBlock(src, skipRender){
   const elev = state.city.elev;
   const elevBonus = elev!=null ? (elev>=2000?5:elev>=1000?3:0) : 0;
   if(!state.manualOn){
-    d.index = rainDayCap(Math.min(100, computeIndex(d.cloud, d.hum, d.vis, d.wind, d.aod, d.lowC, d.midC, d.highC, blkSet, d.precip) + elevBonus), d.dayMaxPrecip, d.precip);
-    if(d.srIndex != null){
-      d.srIndex = rainDayCap(Math.min(100, computeIndex(d.srCloud, d.srHum, d.srVis, d.srWind, d.srAOD, d.srLow, d.srMid, d.srHigh, blkRise, d.srPrecip) + elevBonus), d.dayMaxPrecip, d.srPrecip);
+    // 综合模式：EC 与 GFS 各自用各自云况 + 光路遮挡重算，再加权平均（不能被 EC 单模型覆盖）
+    if(state.ensDays){
+      const dec0 = state.ensDays[0][0], dg0 = state.ensDays[1][0];
+      if(dec0 && dg0){
+        const calc = (dd, azBlk)=>{
+          return rainDayCap(Math.min(100, computeIndex(dd.cloud, dd.hum, dd.vis, dd.wind, dd.aod, dd.lowC, dd.midC, dd.highC, azBlk, dd.precip) + elevBonus), dd.dayMaxPrecip, dd.precip);
+        };
+        d.index = Math.round(calc(dec0, blkSet)*0.6 + calc(dg0, blkSet)*0.4);
+        if(dec0.srIndex!=null && dg0.srIndex!=null){
+          const calcSR = (dd, azBlk)=>{
+            return rainDayCap(Math.min(100, computeIndex(dd.srCloud, dd.srHum, dd.srVis, dd.srWind, dd.srAOD, dd.srLow, dd.srMid, dd.srHigh, azBlk, dd.srPrecip) + elevBonus), dd.dayMaxPrecip, dd.srPrecip);
+          };
+          d.srIndex = Math.round(calcSR(dec0, blkRise)*0.6 + calcSR(dg0, blkRise)*0.4);
+        }
+      }
+    }else{
+      d.index = rainDayCap(Math.min(100, computeIndex(d.cloud, d.hum, d.vis, d.wind, d.aod, d.lowC, d.midC, d.highC, blkSet, d.precip) + elevBonus), d.dayMaxPrecip, d.precip);
+      if(d.srIndex != null){
+        d.srIndex = rainDayCap(Math.min(100, computeIndex(d.srCloud, d.srHum, d.srVis, d.srWind, d.srAOD, d.srLow, d.srMid, d.srHigh, blkRise, d.srPrecip) + elevBonus), d.dayMaxPrecip, d.srPrecip);
+      }
     }
   }
   if(!skipRender){
@@ -3756,7 +3816,7 @@ function drawSunDirOnPred(ctx, W, H, px, py, dirGrid){
 
 /* ================= 气象模型切换 ================= */
 const MODEL_NOTE = {
-  default:"综合匹配",
+  default:"综合=EC60%+GFS40% 独立评分平均（避免多模式缝合虚高）",
   gfs:"GFS 模式",
   ec:"ECMWF 模式"
 };
