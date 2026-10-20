@@ -849,7 +849,7 @@ function scoreCloudLow(lowC){
   if(lowC < 70) return 20;    // 较多低云，遮挡
   return 0;                    // 低云厚重，完全遮挡
 }
-function scoreCloudMid(midC){
+function scoreCloudMid(midC, lowC){
   // 中云：火烧云最佳云层（高积云、高层云）
   if(midC==null) return 50;
   if(midC < 10) return 30;    // 几乎无中云，缺主体
@@ -857,6 +857,11 @@ function scoreCloudMid(midC){
   if(midC < 50) return 100;   // 中等中云，最佳
   if(midC < 70) return 80;    // 较多中云
   if(midC < 90) return 50;    // 很多中云
+  // 中云≥90% 必须区分两种情况（否则把"满布画布"误判成阴雨天）：
+  // ① 低云很低（≤30%）：中云满布 = 整片天空被高积云/高层云幕布覆盖，低层干净，
+  //    日落方向云层厚实、全部可被夕阳染色 → 大烧画布（哈尔滨：中云100%/低云0 → 实际大烧）
+  // ② 低云也厚：才是阴雨遮蔽（真正阴雨天中云满布且低云压顶）
+  if(lowC==null || lowC<=30) return 88;
   return 20;                    // 阴雨天
 }
 function scoreCloudHigh(highC){
@@ -871,7 +876,7 @@ function scoreCloudHigh(highC){
 function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, dirBlock, precip){
   // 照搬 sunsetbot 算法：中云主体 + 高云染红 + 低云遮挡 + AOD适中
   const sLow = scoreCloudLow(lowC);
-  const sMid = scoreCloudMid(midC);
+  const sMid = scoreCloudMid(midC, lowC);
   const sHigh = scoreCloudHigh(highC);
   // 【低云遮蔽系数】低云是物理遮挡层：低云厚时，中高云"画布"被挡在云顶之上、从地面不可见，
   // 画布得分必须按可见度打折——低云>85%视为完全遮蔽，画布分归零。
