@@ -2221,7 +2221,10 @@ async function loadCity(city){
     const w = await fetchWeather(city.lat, city.lon, state.model, src);
     if(mySeq !== state._loadSeq) return;   // 已被更新的请求取代，丢弃本次结果
     state.days = buildEnsembleDays(w);
-    state.liveWeather = (w && w.current) ? w.current : null;   // 当地此时天气实况
+    // 当地此时天气实况：综合模式 w 是 {__ensemble:[...], __primary} 组装对象，无 .current，
+    // 必须从主模型（__primary）透传，否则实时天气条永远为空
+    state.liveWeather = (w && w.current) ? w.current
+      : (w && w.__primary && w.__primary.current) ? w.__primary.current : null;
     state.weatherOK = true;
     state.isFallback = false;
   }catch(e){
