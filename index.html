@@ -471,7 +471,7 @@
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%" class="map-duo">
       <div style="position:relative;background:#151c36;border-radius:12px;overflow:hidden">
         <canvas id="predCloudCanvas" style="display:block;width:100%;height:auto"></canvas>
-        <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px">实时云量</div>
+        <div style="position:absolute;top:8px;left:10px;font-size:12px;color:#9aa7c7;background:rgba(10,14,30,0.55);padding:3px 8px;border-radius:6px">火烧云时刻云量</div>
       </div>
       <div style="position:relative;background:#151c36;border-radius:12px;overflow:hidden">
         <canvas id="predCanvas" style="display:block;width:100%;height:auto"></canvas>
@@ -3154,7 +3154,7 @@ async function renderPredictionMap(){
         if(r.ok) geo = await r.json();
       }catch(e){}
     }
-    // 2) 批量获取：全国 4° 网格实时云量 + 城市指数
+    // 2) 批量获取：全国 4° 网格【日落时刻】云量预报 + 城市指数（与首页彩霞指数同口径）
     //    Open-Meteo 支持逗号分隔多坐标（一次请求最多 ~60 点），把原先 192 个单点并发
     //    压缩为 4 个批量请求，手机网络下不再超时/被限流
     const LATS=[], LONS=[];
@@ -3168,16 +3168,77 @@ async function renderPredictionMap(){
     REGIONAL_CITIES.forEach(c=>{ allPts.push({la:c.lat, lo:c.lon, key:"c_"+c.name, city:c}); });
     // 一次批量请求最多 60 个坐标
     const BATCH = 60;
+    // 在 w.hourly 里找"日落时刻最近小时"的下标（与首页 buildDays 同口径：日落时刻最近小时云量 + 日落±1h最大降水）
+    // 今天日落已过（晚于当前时间 1h 以上）→ 自动取明天的日落，程度图预测"下一场火烧云"
+    const pickSunsetIdx = (w)=>{
+      const h = w.hourly, d = w.daily;
+      if(!h || !h.time || !d || !d.sunset || !d.sunset.length) return null;
+      const nowUTC = Date.now();
+      for(let k=0; k<d.sunset.length; k++){
+        const iso = d.sunset[k];
+        const t = new Date(iso).getTime();
+        if(isNaN(t)) continue;
+        // 日落已过 60 分钟以上 → 跳过（今天已烧完，看下一场）；未过或刚过 → 用这一天
+        if(t > nowUTC - 3600*1000){
+          const m = /T(\d{2}:\d{2})/.exec(iso);
+          if(!m) continue;
+          const target = m[1];
+          const dayPrefix = iso.slice(0,10);
+          const tMin = ((+target.slice(0,2))*60 + (+target.slice(3,5)));
+          let best = -1, bestDiff = 1e9;
+          for(let i2=0; i2<h.time.length; i2++){
+            if(!h.time[i2].startsWith(dayPrefix)) continue;
+            const m2 = /T(\d{2}:\d{2})/.exec(h.time[i2]);
+            if(!m2) continue;
+            const diff = Math.abs(((+m2[1].slice(0,2))*60 + (+m2[1].slice(3,5))) - tMin);
+            if(diff < bestDiff){ bestDiff = diff; best = i2; }
+          }
+          if(best>=0) return best;
+        }
+      }
+      // 全部日落都已过（极端情况）→ 用最后一个日落的时刻
+      const last = d.sunset[d.sunset.length-1];
+      const m = /T(\d{2}:\d{2})/.exec(last||"");
+      if(m){
+        const dayPrefix = (last||"").slice(0,10);
+        const tMin = ((+m[1].slice(0,2))*60 + (+m[1].slice(3,5)));
+        let best = -1, bestDiff = 1e9;
+        for(let i2=0; i2<h.time.length; i2++){
+          if(!h.time[i2].startsWith(dayPrefix)) continue;
+          const m2 = /T(\d{2}:\d{2})/.exec(h.time[i2]);
+          if(!m2) continue;
+          const diff = Math.abs(((+m2[1].slice(0,2))*60 + (+m2[1].slice(3,5))) - tMin);
+          if(diff < bestDiff){ bestDiff = diff; best = i2; }
+        }
+        return best;
+      }
+      return null;
+    };
+    // 日落±1h 窗口最大小时降水（与首页 maxPrecipAround 同口径）
+    const maxPrecipAroundIdx = (arr, idx)=>{
+      if(!arr) return null;
+      let mx = 0;
+      for(let k=Math.max(0,idx-1); k<=Math.min(arr.length-1,idx+1); k++){
+        const v = arr[k];
+        if(v!=null && v>mx) mx = v;
+      }
+      return mx>0 ? mx : null;
+    };
     const parsePoint = (w)=>{
+      // 取该点日落时刻的云况（火烧云时刻），与首页彩霞指数完全同一口径
       const c = w && w.current ? w.current : {};
-      const lowC = c.cloud_cover_low!=null?c.cloud_cover_low:0;
-      const midC = c.cloud_cover_mid!=null?c.cloud_cover_mid:0;
-      const highC = c.cloud_cover_high!=null?c.cloud_cover_high:0;
-      const cloud = c.cloud_cover!=null?c.cloud_cover: Math.max(lowC, midC, highC);
-      // 降水（实时 mm/h）：下雨=雨云压场，与首页彩霞指数同一口径压分
-      const precip = c.precipitation!=null?c.precipitation:null;
+      const idx = pickSunsetIdx(w);
+      const pick = (arr)=> (idx!=null && arr && arr[idx]!=null) ? arr[idx] : null;
+      const lowC  = pick(w.hourly && w.hourly.cloud_cover_low);
+      const midC  = pick(w.hourly && w.hourly.cloud_cover_mid);
+      const highC = pick(w.hourly && w.hourly.cloud_cover_high);
+      const tot   = pick(w.hourly && w.hourly.cloud_cover);
+      const cloud = tot!=null ? tot : (lowC!=null||midC!=null||highC!=null ? Math.max(lowC||0, midC||0, highC||0) : (c.cloud_cover!=null?c.cloud_cover:0));
+      // 降水：日落±1h 窗口最大（与首页同口径；窗口全空时退回当前实时降水）
+      let precip = idx!=null ? maxPrecipAroundIdx(w.hourly && w.hourly.precipitation, idx) : null;
+      if(precip==null && c.precipitation!=null && c.precipitation>0) precip = c.precipitation;
       // 与首页彩霞指数同一打分口径（湿度/能见度/风/AOD 取典型值，云层结构差异主导评分）
-      const vivid = computeIndex(cloud, 60, 20, 10, 0.25, lowC, midC, highC, null, precip);
+      const vivid = computeIndex(cloud, 60, 20, 10, 0.25, lowC!=null?lowC:0, midC!=null?midC:0, highC!=null?highC:0, null, precip);
       return {vivid, cloud, lowC, precip};
     };
     const fetchBatch = async (pts)=>{
@@ -3186,7 +3247,8 @@ async function renderPredictionMap(){
       try{
         const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude="+pts.map(p=>p.la).join(",")
           + "&longitude="+pts.map(p=>p.lo).join(",")
-          + "&current=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation&forecast_days=1", {signal: ac.signal});
+          + "&hourly=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation"
+          + "&daily=sunrise,sunset&timezone=auto&forecast_days=2", {signal: ac.signal});
         clearTimeout(t);
         if(!res.ok) return null;
         const arr = await res.json();
@@ -3197,7 +3259,7 @@ async function renderPredictionMap(){
     // 内存缓存 miss 时尝试 localStorage（刷新页面后无需重新请求，防 429）
     if(!(predMapCache && Date.now()-predMapCache.ts < PRED_MAP_TTL)){
       try{
-        const pc = JSON.parse(localStorage.getItem("sunset_predmap_v2")||"null");
+        const pc = JSON.parse(localStorage.getItem("sunset_predmap_v3")||"null");
         if(pc && pc.ts && Date.now()-pc.ts < PRED_MAP_TTL && pc.grid && Object.keys(pc.grid).length>10){
           predMapCache = pc;
         }
@@ -3206,8 +3268,8 @@ async function renderPredictionMap(){
     if(predMapCache && Date.now()-predMapCache.ts < PRED_MAP_TTL){
       drawCloudCanvas(document.getElementById("predCloudCanvas"), predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo);
       drawPredictionCanvas(cv, predMapCache.grid, predMapCache.LATS, predMapCache.LONS, predMapCache.geo, predMapCache.cityIdx);
-      if(tag) tag.textContent = "程度图 · 实时云况（与彩霞指数同口径，缓存 "+(predMapCache.ts>0?Math.round((Date.now()-predMapCache.ts)/60000):0)+" 分钟前）";
-      if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 实时云况";
+      if(tag) tag.textContent = "程度图 · 火烧云时刻（日落）云况预报 · 缓存 "+(predMapCache.ts>0?Math.round((Date.now()-predMapCache.ts)/60000):0)+" 分钟前";
+      if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 日落时刻云况";
       applySunDirBlock(null, true);
       refreshSunDirWithSat();   // 卫星云量网格就绪后自动升级光路判断
       return;
@@ -3260,12 +3322,12 @@ async function renderPredictionMap(){
     }
     // 3) 写入缓存（内存 + localStorage 双份，刷新页面后无需重发 4 批请求，防 429）+ 绘制两张图
     predMapCache = {ts:Date.now(), grid, LATS, LONS, cityIdx, geo};
-    try{ localStorage.setItem("sunset_predmap_v2", JSON.stringify({ts: Date.now(), grid, LATS, LONS, cityIdx})); }catch(e){}
+    try{ localStorage.setItem("sunset_predmap_v3", JSON.stringify({ts: Date.now(), grid, LATS, LONS, cityIdx})); }catch(e){}
     const cloudCv = document.getElementById("predCloudCanvas");
     drawCloudCanvas(cloudCv, grid, LATS, LONS, geo);
     drawPredictionCanvas(cv, grid, LATS, LONS, geo, cityIdx);
-    if(tag) tag.textContent = "程度图 · 实时云况（与彩霞指数同口径）";
-    if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 实时云况";
+    if(tag) tag.textContent = "程度图 · 火烧云时刻（日落）云况预报";
+    if(els.regionalNote) els.regionalNote.textContent = "省会城市 · 直辖市 · 城市点精确评分 · 日落时刻云况";
     // 云况网格就绪后：评估太阳光线方向遮挡（巧摄理念），并入今日指数
     applySunDirBlock(null, true);
     refreshSunDirWithSat();   // 卫星云量网格就绪后自动升级光路判断
@@ -3307,7 +3369,7 @@ function applySunDirBlock(src, skipRender){
   }
 }
 
-/* ---- 实时云量图：白色=有云，透明=无云（canvas 插值渲染） ---- */
+/* ---- 火烧云时刻云量图：白色=有云，透明=无云（canvas 插值渲染） ---- */
 function drawCloudCanvas(cv, grid, LATS, LONS, geo){
   if(!cv) return;
   const BOUNDS = {la0:3, la1:54, lo0:73, lo1:135};
