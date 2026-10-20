@@ -2572,6 +2572,9 @@ let satLayerAutoFallback = false;                      // 是否已发生自动�
 let satSeq = 0;                                        // 卫星渲染序号：切换图层/时间时作废旧加载，防止竞态吞掉切换
 let satFrame = null;                                   // 当前帧时间字符串
 let satLoading = false;
+let satIsLatest = true;                                // 当前看的是否为"最新"帧（手动切历史帧时暂停自动刷新）
+let satAutoTimer = null;                                // 自动刷新定时器
+const SAT_AUTO_REFRESH_MS = 15 * 60 * 1000;           // 每 15 分钟自动拉最新帧（GIBS 新帧约此节奏落地）
 
 // 图层按钮高亮与实际 satLayer 同步（自动降级后也必须更新按钮）
 function updateSatLayerUI(){
@@ -2829,17 +2832,17 @@ async function renderSatMap(){
         await renderSatMap();
         return;
       }
-      // 生成时间轴：当前帧 + 前 4 帧（近 2.5 小时）
+      // 生成时间轴：当前帧 + 前 9 帧（近 5 小时，可回看云动）
       if(bar){
         bar.innerHTML = "";
-        for(let k=0; k<5; k++){
+        for(let k=0; k<10; k++){
           const t = new Date(Date.parse(f) - k*SAT_TIME_STEP_MS);
           const btn = document.createElement("button");
-          btn.textContent = k===0 ? "最新 " : t.toISOString().slice(11,16)+"Z";
+          btn.textContent = k===0 ? "最新" : t.toISOString().slice(11,16)+"Z";
           btn.dataset.time = t.toISOString().replace(/\.\d+Z$/,"Z");
           btn.style.cssText = "font-size:11px;padding:3px 9px;border-radius:999px;cursor:pointer;border:1px solid rgba(100,200,255,.3);background:rgba(10,14,30,.7);color:#cfe3ff";
           if(k===0) btn.style.background = "rgba(64,196,255,.25)";
-          btn.onclick = ()=>{ switchSatFrame(btn.dataset.time); };
+          btn.onclick = ()=>{ satIsLatest = (k===0); switchSatFrame(btn.dataset.time); };
           bar.appendChild(btn);
         }
       }
@@ -3002,11 +3005,40 @@ async function renderSatMap(){
     // 时间戳
     tag.textContent = satFrame ? (SAT_LAYERS[satLayer].label + "·葵花9 " + satFrame.slice(0,16).replace("T"," ") + (satLayerAutoFallback ? "（已自动降级）" : "")) : "卫星云图";
     updateSatLayerUI();
+    // 实时监看：自动刷新（仅当前看的是"最新"帧时）
+    scheduleSatAutoRefresh();
   } catch(e){
     tag.textContent = "卫星云图加载失败";
   } finally {
     if(mySeq === satSeq) satLoading = false;   // 仅当前加载可释放占用，被作废的加载不动标志
   }
+}
+
+// 实时监看：每 15 分钟探测一次 GIBS 最新帧，有新帧则自动重渲染
+// 规则：① 仅当前看的是"最新"帧时才刷新（用户手动回看历史帧不打断）
+//       ② 页面切到后台时顺延（省资源、不浪费请求）
+//       ③ 无新帧时继续等下一轮
+function scheduleSatAutoRefresh(){
+  if(satAutoTimer){ clearTimeout(satAutoTimer); satAutoTimer = null; }
+  satAutoTimer = setTimeout(async ()=>{
+    if(document.hidden){ scheduleSatAutoRefresh(); return; }
+    if(!satIsLatest){ scheduleSatAutoRefresh(); return; }
+    if(satLoading){ scheduleSatAutoRefresh(); return; }
+    try{
+      const f = await probeLatestSatFrame();
+      if(f && f !== satFrame){
+        satSeq++;
+        satFrame = f;          // 直接跳到新最新帧，重建时间轴
+        satIsLatest = true;
+        satLoading = false;
+        await renderSatMap();
+      }else{
+        scheduleSatAutoRefresh();  // 无新帧，继续等
+      }
+    }catch(e){
+      scheduleSatAutoRefresh();
+    }
+  }, SAT_AUTO_REFRESH_MS);
 }
 
 // 切换卫星图层（可见光/红外/气团）：作废旧加载后立即重启
@@ -3016,6 +3048,7 @@ function switchSatLayer(layer){
   satLoading = false;       // 解除占用，允许新加载立即启动
   satLayer = layer;
   satLayerAutoFallback = false;
+  satIsLatest = true;        // 切图层后回到"最新帧"模式，恢复自动刷新
   satFrame = null;
   updateSatLayerUI();
   renderSatMap();
