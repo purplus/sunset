@@ -725,16 +725,16 @@ function sunDirBlock(lat, lon, azDeg, grid, LATS, LONS){
 function dirBlockText(b, isDusk){
   const dir = isDusk ? "日落" : "日出";
   if(b==null) return {t: dir+"方向遮挡 评估中…", c:"var(--ink-3)"};
-  if(b<30)  return {t: dir+"方向开阔", c:"var(--good)"};
-  if(b<50)  return {t: dir+"方向轻微遮挡", c:"var(--warn)"};
+  if(b<25)  return {t: dir+"方向开阔", c:"var(--good)"};
+  if(b<45)  return {t: dir+"方向轻微遮挡，阳光略减弱", c:"var(--warn)"};
   if(b<70)  return {t: dir+"方向明显遮挡，阳光减弱", c:"var(--orange)"};
   return {t: dir+"方向被厚云遮挡，阳光难透", c:"var(--bad)"};
 }
 function dirBlockPenalty(b){
   if(b==null) return 0;
-  if(b>=70) return -18;   // 太阳被厚云挡死，火烧云基本不成立
-  if(b>=50) return -10;
-  if(b>=30) return -4;
+  if(b>=70) return -22;   // 太阳被厚云挡死，火烧云基本不成立
+  if(b>=45) return -14;   // 明显遮挡：阳光大幅减弱
+  if(b>=25) return -7;    // 轻微遮挡：也压分（用户视角"云量不少"就应体现）
   return 0;
 }
 // 降水惩罚：日落/日出时段正在下雨 → 天空是雨云而非彩霞，必须强压分
@@ -2747,8 +2747,9 @@ async function buildSatCloudGrid(){
   // 白天用可见光（最接近实拍的真云图），夜间自动切红外（24h 可用）
   const h = new Date().getHours();
   const prefer = (h>=6 && h<18) ? "vis" : "ir";
-  // 帧：复用卫星模块当前帧（新鲜则直接使用），否则探测
-  let frame = (satFrame && /^20\d\d-/.test(satFrame)) ? satFrame : null;
+  // 帧：优先用"最新"帧（用户没在回看历史帧时可直接复用，省一次探测）；
+  // 用户在看历史帧(satIsLatest=false)时强制重新探测最新帧——光路判断的是"现在"的云，不能被历史帧污染
+  let frame = (satIsLatest && satFrame && /^20\d\d-/.test(satFrame)) ? satFrame : null;
   if(!frame){
     try{ frame = await probeLatestSatFrame(); }catch(e){}
   }
