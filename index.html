@@ -880,12 +880,13 @@ function scoreCloudMid(midC, lowC){
 }
 function scoreCloudHigh(highC){
   // 高云：卷云类最易被染成金红色
+  // 2026-10-22 收紧：高云>60% 已接近"满云盖顶"，颜色偏灰白，不再打满
   if(highC==null) return 50;
   if(highC < 10) return 20;    // 无高云
   if(highC < 30) return 50;    // 少量高云
   if(highC < 60) return 90;    // 中等高云，卷云易染红
-  if(highC < 80) return 100;   // 较多高云
-  return 70;                    // 很多高云
+  if(highC < 80) return 90;    // 较多高云（原 100 → 90）
+  return 60;                    // 很多高云（原 70 → 60）
 }
 function computeIndex(cloud, hum, vis, wind, aod, lowC, midC, highC, dirBlock, precip){
   // 照搬 sunsetbot 算法：中云主体 + 高云染红 + 低云遮挡 + AOD适中
