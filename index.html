@@ -1688,7 +1688,7 @@ function verdictText(d, isDusk=true){
   // 白天已下中雨及以上（时段预报雨停）：雨日整体压低，主文案直接说明
   if(d.dayMaxPrecip!=null && d.dayMaxPrecip >= 3 && (p==null || p < 0.1) && idx <= 55)
     return "今天白天有中到大雨，雨后云厚湿重，"+(isDusk?"晚霞":"朝霞")+"机会低。";
-  if(lv.t.startsWith("大烧")) return t.includes("出片") ? when+"是一场值得出门的火烧云。" : "霞光可期，提前一小时到机位。";
+  if(lv.t.startsWith("大烧")) return lv.t.includes("出片") ? when+"是一场值得出门的火烧云。" : "霞光可期，提前一小时到机位。";
   if(lv.t.startsWith("中烧")) return "有一点希望，值得蹲一蹲。";
   if(lv.t.startsWith("微烧")) return "多半平平，顺路看一眼即可。";
   return "不建议特意为"+(isDusk?"晚霞":"朝霞")+"出门。";
