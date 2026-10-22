@@ -3461,7 +3461,9 @@ async function renderPredictionMap(){
     Object.keys(cityIdx).forEach(nm=>{
       const c = REGIONAL_CITIES.find(x=>x.name===nm);
       if(!c) return;
-      const la0 = Math.round(c.lat/4)*4, lo0 = Math.round(c.lon/4)*4;
+      // 对齐到真实网格(18+4k / 73+4k)：Math.round(v/4)*4 会落到网格外(如太原 37.87→36 不在网格,112.55→112 不在网格)
+      const la0 = 18 + 4*Math.round((c.lat-18)/4);
+      const lo0 = 73 + 4*Math.round((c.lon-73)/4);
       for(const dla of [-4,0,4]){
         for(const dlo of [-4,0,4]){
           const key = (la0+dla)+","+(lo0+dlo);
@@ -3474,7 +3476,7 @@ async function renderPredictionMap(){
       Object.keys(cityIdx).forEach(nm=>{
         const c = REGIONAL_CITIES.find(x=>x.name===nm);
         if(!c) return;
-        const key = Math.round(c.lat/4)*4 + "," + Math.round(c.lon/4)*4;
+        const key = (18 + 4*Math.round((c.lat-18)/4)) + "," + (73 + 4*Math.round((c.lon-73)/4));
         if(!grid[key]) grid[key] = cityIdx[nm];
       });
     }
@@ -3509,10 +3511,29 @@ function applySunDirBlock(src, skipRender){
   const azSet = sunAzimuth(lat, lon, d.date, tz, false);
   const azRise = sunAzimuth(lat, lon, d.date, tz, true);
   const grid = g.grid, LATS = g.LATS, LONS = g.LONS;
+  // 光路遮挡 = max(卫星反演, 模型网格)：卫星对薄中高云亮度反演偏低（会漏报方向遮挡），
+  // 模型网格含真实总云量；任一来源判"方向有云"就按有云处理（宁保守不漏报）
   const blkSet = sunDirBlock(lat, lon, azSet, grid, LATS, LONS);
   const blkRise = sunDirBlock(lat, lon, azRise, grid, LATS, LONS);
-  d.dirBlock = blkSet;
-  d.dirBlockRise = blkRise;
+  let blkSetF = blkSet, blkRiseF = blkRise;
+  if(src && src.grid && src.grid._sat && predMapCache && predMapCache.grid){
+    // 网格是"下一场火烧云"云况：今天日落已过 60 分钟后会切到明天数据，与今天光路口径不符 → 只用卫星(当前真实云)
+    const hm = d.sunsetHM || "";
+    const m = /^(\d{1,2}):(\d{2})/.exec(hm);
+    const nowMin = new Date().getHours()*60 + new Date().getMinutes();
+    const setMin = m ? (+m[1])*60 + (+m[2]) : -1;
+    const stillToday = setMin >= 0 && nowMin < setMin + 60;
+    if(stillToday){
+      const ms = sunDirBlock(lat, lon, azSet, predMapCache.grid, predMapCache.LATS, predMapCache.LONS);
+      const mr = sunDirBlock(lat, lon, azRise, predMapCache.grid, predMapCache.LATS, predMapCache.LONS);
+      if(ms!=null && blkSetF!=null) blkSetF = Math.max(blkSetF, ms);
+      else if(ms!=null) blkSetF = ms;
+      if(mr!=null && blkRiseF!=null) blkRiseF = Math.max(blkRiseF, mr);
+      else if(mr!=null) blkRiseF = mr;
+    }
+  }
+  d.dirBlock = blkSetF;
+  d.dirBlockRise = blkRiseF;
   const elev = state.city.elev;
   const elevBonus = elev!=null ? (elev>=2000?5:elev>=1000?3:0) : 0;
   if(!state.manualOn){
