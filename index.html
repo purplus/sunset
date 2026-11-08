@@ -702,6 +702,48 @@ function interpGridVal(grid, LATS, LONS, la, lo, field){
   const bot=gv(v10)*(1-g)+gv(v11)*g;
   return top*(1-f)+bot*f;
 }
+/* 沿太阳方位分段剖面：
+   近端 60/120/180km → 视线遮挡（决定太阳本体是否可见）
+   远端 240/300/360/420km → 延长线画布（该处中高云会被低角度夕阳从侧面照亮）
+   物理依据：太阳近乎无穷远，故"近端云"挡的是太阳本体视线；
+   而"远端云"在视觉上位于太阳上方/更远处，它自身被照亮成为画布，不挡太阳本体 */
+function sunAxisProfile(grid, LATS, LONS, lat, lon, azDeg){
+  if(!grid || !LATS || !LONS) return null;
+  const isSat = !!grid._sat;
+  let nO=0,nW=0,nLow=0,nLowW=0,nMH=0,nMHW=0;
+  let fC=0,fW=0,fMH=0,fMHW=0;
+  const near=[60,120,180], nw=[0.50,0.30,0.20];
+  const far=[240,300,360,420], fw=[0.40,0.30,0.20,0.10];
+  near.forEach((km,i)=>{
+    const p = sampleAlongAzimuth(lat, lon, azDeg, km);
+    const cloud = interpGridVal(grid, LATS, LONS, p.lat, p.lon, "cloud");
+    const lowC  = interpGridVal(grid, LATS, LONS, p.lat, p.lon, "lowC");
+    const midC  = interpGridVal(grid, LATS, LONS, p.lat, p.lon, "midC");
+    const highC = interpGridVal(grid, LATS, LONS, p.lat, p.lon, "highC");
+    if(cloud == null) return;
+    const occl = isSat ? cloud : (lowC!=null ? Math.min(100, cloud*0.6 + lowC*0.4) : cloud);
+    nO += occl*nw[i]; nW += nw[i];
+    if(lowC != null){ nLow += lowC*nw[i]; nLowW += nw[i]; }
+    if(midC!=null || highC!=null){ nMH += Math.max(midC==null?0:midC, highC==null?0:highC)*nw[i]; nMHW += nw[i]; }
+  });
+  far.forEach((km,i)=>{
+    const p = sampleAlongAzimuth(lat, lon, azDeg, km);
+    const cloud = interpGridVal(grid, LATS, LONS, p.lat, p.lon, "cloud");
+    const midC  = interpGridVal(grid, LATS, LONS, p.lat, p.lon, "midC");
+    const highC = interpGridVal(grid, LATS, LONS, p.lat, p.lon, "highC");
+    if(cloud == null) return;
+    fC += cloud*fw[i]; fW += fw[i];
+    if(midC!=null || highC!=null){ fMH += Math.max(midC==null?0:midC, highC==null?0:highC)*fw[i]; fMHW += fw[i]; }
+  });
+  return {
+    nearOccl: nW>0 ? Math.round(nO/nW) : null,
+    nearLow:  nLowW>0 ? Math.round(nLow/nLowW) : null,
+    nearMH:   nMHW>0 ? Math.round(nMH/nMHW) : null,
+    farCloud: fW>0 ? Math.round(fC/fW) : null,
+    farMH:    fMHW>0 ? Math.round(fMH/fMHW) : null,
+    sat: isSat
+  };
+}
 function sunDirBlock(lat, lon, azDeg, grid, LATS, LONS){
   // 返回 0-100 方向遮挡度；无网格数据返回 null（不参与扣分）
   if(!grid || !LATS || !LONS) return null;
@@ -735,11 +777,21 @@ function dirBlockText(b, isDusk){
    把反方向(太阳方位+180°)的中高云染成红紫 → 摄影圈称"反烧/反霞"。
    成立三要素：①太阳方向有遮挡(太阳本体看不到,但光还能漏) ②反方向有中高云画布 ③反方向低层通透
    与正烧互补：正烧=太阳方向开阔+头顶画布；反烧=太阳方向被挡+对面天空画布 */
-function antiGlowIndex(grid, LATS, LONS, lat, lon, azSunDir, dirBlock){
+function antiGlowDetail(grid, LATS, LONS, lat, lon, azSunDir, dirBlock){
   if(!grid || !LATS || !LONS) return null;
   const azAnti = (azSunDir + 180) % 360;
   const kmSteps = [60,120,180,240,300,360,420];
   const weights = [0.25,0.22,0.18,0.15,0.10,0.06,0.04];
+
+  // ① 太阳方向分段剖面：近端=视线遮挡（太阳本体能不能看到）；远端=延长线云带（会被照亮）
+  const prof = sunAxisProfile(grid, LATS, LONS, lat, lon, azSunDir);
+  const blk = (dirBlock==null) ? 50 : dirBlock;
+  const nearOccl = (prof && prof.nearOccl!=null) ? prof.nearOccl : blk;
+  const nearLow  = prof ? prof.nearLow : null;
+  const farMH    = prof ? prof.farMH : null;
+  const farCloud = prof ? prof.farCloud : null;
+
+  // ② 反方向画布采样（云量 + 低云通透）
   let total=0, wsum=0, lowSum=0, lowW=0;
   kmSteps.forEach((km,i)=>{
     const p = sampleAlongAzimuth(lat, lon, azAnti, km);
@@ -753,12 +805,43 @@ function antiGlowIndex(grid, LATS, LONS, lat, lon, azSunDir, dirBlock){
   const cloudAnti = Math.round(total/wsum);
   const lowAnti = lowW > 0 ? Math.round(lowSum/lowW) : null;
   const canvas = scoreCloud(cloudAnti);          // 反方向画布：云量40%左右最优
-  const blk = (dirBlock==null) ? 50 : dirBlock;  // 太阳方向遮挡
-  // 太阳被挡才能反烧：直射(<25)主体还是正烧；太阳本体被挡且有缝隙(45-75)最佳；挡死(>90)光漏不过来
-  const sunFit = blk<25 ? 0.20 : blk<45 ? 0.55 : blk<75 ? 1.00 : blk<90 ? 0.70 : 0.35;
-  // 反方向低层通透：对面地平线自己的低云厚了，霞光被它挡住
+
+  /* ---- 机制一：太阳本体被挡 → 光从云隙/云底漏过，染红反方向天空（经典反烧）----
+     视线遮挡(近端低云,太阳看不到) + 光线来路(远端中高云)通透 → 对面天空被染红
+     整层厚云(近端遮挡高 + 远端中高云也厚) → 光被云顶挡死，反烧概率骤降 */
+  const sightVal = (nearLow!=null) ? Math.max(nearLow, nearOccl*0.6) : nearOccl;
+  const pathClear = (farMH!=null)
+    ? (farMH<=30 ? 1.00 : farMH<=50 ? 0.85 : farMH<=70 ? 0.55 : 0.30)  // 来路越通透，反烧越强
+    : 1.00;                                                            // 卫星网格无分层 → 按通透处理
+  let sunFit;
+  if(sightVal < 25) sunFit = 0.20;                                     // 太阳可见 → 正烧为主
+  else if(sightVal > 85 && farMH != null && farMH > 60) sunFit = 0.35; // 整层厚云：视线+来路双挡，光漏不过来
+  else sunFit = 0.55 + 0.45*pathClear;                                 // 太阳被挡：0.55(来路差) ~ 1.0(来路通透)
   const lowFit = lowAnti==null ? 1 : (lowAnti<=30 ? 1 : lowAnti<=55 ? 0.85 : lowAnti<=70 ? 0.60 : 0.30);
-  return Math.round(clamp(canvas*sunFit*lowFit, 0, 100));
+  const antiLocal = canvas*sunFit*lowFit;
+
+  /* ---- 机制二：近端通透、延长线远端有云 → 远端云带被低角度夕阳照亮（远端霞）----
+     观察者→太阳之间无云（太阳本体可见），但太阳方向更远处（240-420km）有中高云，
+     这些云位于太阳上方/更远，被夕阳从侧面/上方照亮 → 呈金红色云带，拍太阳方向即可拍到。
+     与机制一互斥：机制一要太阳被挡，机制二要太阳可见（近端通透）。 */
+  let remote = 0;
+  const farCanvasVal = (farMH!=null) ? farMH : farCloud;
+  if(nearOccl != null && nearOccl < 40 && farCanvasVal != null && farCanvasVal >= 25 && farCanvasVal <= 85){
+    const nearClear = nearOccl < 25 ? 0.95 : 0.75;   // 近端越干净，远端云受光越纯
+    remote = scoreCloud(farCanvasVal) * nearClear * 0.9;
+  }
+
+  const mode = (remote >= antiLocal) ? (remote>0 ? "remote" : "none") : "anti";
+  return {
+    val: Math.round(clamp(Math.max(antiLocal, remote), 0, 100)),
+    mode: mode,
+    nearOccl: nearOccl, nearLow: nearLow, farMH: farMH, farCloud: farCloud,
+    cloudAnti: cloudAnti, lowAnti: lowAnti
+  };
+}
+function antiGlowIndex(grid, LATS, LONS, lat, lon, azSunDir, dirBlock){
+  const d = antiGlowDetail(grid, LATS, LONS, lat, lon, azSunDir, dirBlock);
+  return d ? d.val : null;
 }
 function dirBlockPenalty(b){
   if(b==null) return 0;
@@ -1597,14 +1680,19 @@ function renderHero(){
     const azA = (azS+180)%360;
     const anti = d.antiIndex;
     const antiTone = (anti!=null && anti>=60) ? "var(--gold)" : (anti!=null && anti>=45) ? "var(--orange)" : "var(--ink-3)";
+    const antiMode = d.antiMode;
     const antiTip = anti==null ? "评估中…"
-      : anti>=60 ? `反烧 ${anti}%（日落方向被挡，${azimuthText(azA)}天空大概率被染红，值得去反方向机位）`
-      : anti>=45 ? `反烧 ${anti}%（反方向（${azimuthText(azA)}）可能出霞光，可留意）`
-      : `反烧 ${anti}%（正烧为主，反方向机会小）`;
+      : anti>=60 ? (antiMode==="remote"
+          ? `远端霞 ${anti}%（近处通透、${azimuthText(azS)}方向远端云带被夕阳照亮，朝太阳方向即可拍到）`
+          : `反烧 ${anti}%（太阳被低云挡住、光从高空漏过，${azimuthText(azA)}天空大概率被染红，值得去反方向机位）`)
+      : anti>=45 ? (antiMode==="remote"
+          ? `远端霞 ${anti}%（${azimuthText(azS)}方向远处云带可能被照亮，值得留意）`
+          : `反烧 ${anti}%（反方向（${azimuthText(azA)}）可能出霞光，可留意）`)
+      : `反烧 ${anti}%（正烧为主）`;
     els.dirBlockBar.innerHTML = ""
       + `<span class="db-chip" style="color:${dbT.c};border-color:${dbT.c}55;background:${dbT.c}14" title="沿日落方位(约${azS}°)向外420km光路的实时云况评估，遮挡高=阳光被云挡住">🌇 ${dbT.t}${db!=null?` <b>${db}%</b>`:""}</span>`
       + `<span class="db-chip" style="color:${dbrT.c};border-color:${dbrT.c}55;background:${dbrT.c}14" title="沿日出方位(约${Math.round(sunAzimuth(state.city.lat,state.city.lon,d.date,tz,true))}°)向外420km光路的实时云况评估">🌅 ${dbrT.t}${dbr!=null?` <b>${dbr}%</b>`:""}</span>`
-      + `<span class="db-chip" style="color:${antiTone};border-color:${antiTone}55;background:${antiTone}14" title="反烧（反方向霞光）：太阳本体被落点方向云层挡住时，阳光从云隙/云底散射到反方向（约${azA}°、${azimuthText(azA)}）天空，把对面中高云染红。三要素：太阳方向有遮挡＋反方向有中高云画布＋反方向低层通透">🔄 ${antiTip}</span>`
+      + `<span class="db-chip" style="color:${antiTone};border-color:${antiTone}55;background:${antiTone}14" title="霞光两种机制：①反烧——太阳本体被近端低云挡住(视线遮挡)，但远端中高云薄、光从高空来路漏过，染红反方向（约${azA}°、${azimuthText(azA)}）天空；②远端霞——观察者到太阳之间近端无云（太阳可见），但太阳延长线远端(240-420km)有中高云，被低角度夕阳从侧面照亮成金红云带，朝太阳方向即可拍。判据核心：视线遮挡(近端低云)与光线来路遮挡(远端中高云)分离评估">🔄 ${antiTip}</span>`
       + `<span class="db-hint">巧摄理念 · 实时光路遮挡 + 反烧（${satDirGrid?"葵花9卫星云图反演":"模型实时云况"}，仅今日实时）</span>`;
   }else{
     // 未来天：方向遮挡依赖实时云况，无法预报，明确标注避免与天气预报混淆
@@ -1812,10 +1900,17 @@ function verdictDetail(d, isDusk=true){
   if(crystalClear) parts.push("💎 超级水晶天：空气近乎无污染，通透度顶级");
   // 反烧提示：太阳方向被挡、但反方向画布可能被染红 → 给替代机位建议（仅今日实时口径）
   const anti = isDusk ? d.antiIndex : d.antiIndexRise;
+  const antiMode = isDusk ? d.antiMode : d.antiModeRise;
   if(anti!=null && anti>=45){
     const azS = Math.round(sunAzimuth(state.city.lat, state.city.lon, d.date, state.city.tz, isDusk?false:true));
     const azA = (azS+180)%360;
-    parts.push("🔄 反烧 "+anti+"%：太阳落点方向被云挡，"+azimuthText(azA)+"方向天空可能被余晖染红，可考虑反方向机位");
+    if(antiMode==="remote"){
+      parts.push("🌇 远端霞 "+anti+"%：近处天空通透、但"+azimuthText(azS)+"方向更远处有被夕阳照亮的云带，朝太阳方向即可拍到");
+    } else {
+      parts.push("🔄 反烧 "+anti+"%：太阳落点方向被云挡，"+azimuthText(azA)+"方向天空可能被余晖染红，可考虑反方向机位");
+    }
+    // 与正烧指数口径衔接：整体不烧但局部有机会时，明确说明这是"另一种机会"而非矛盾
+    if(idx < 45) parts.push("（整体正烧条件一般，以上是局部机会，不等于全域大烧）");
   }
   return (isDusk?"今晚 ":"明晨 ") + parts.join("；") + "。";
 }
@@ -3444,7 +3539,7 @@ async function renderPredictionMap(){
       if(precip==null && c.precipitation!=null && c.precipitation>0) precip = c.precipitation;
       // 与首页彩霞指数同一打分口径（湿度/能见度/风/AOD 取典型值，云层结构差异主导评分）
       const vivid = computeIndex(cloud, 60, 20, 10, 0.25, lowC!=null?lowC:0, midC!=null?midC:0, highC!=null?highC:0, null, precip);
-      return {vivid, cloud, lowC, precip};
+      return {vivid, cloud, lowC, midC, highC, precip};
     };
     const fetchBatch = async (pts)=>{
       const ac = new AbortController();
@@ -3582,8 +3677,23 @@ function applySunDirBlock(src, skipRender){
   d.dirBlock = blkSetF;
   d.dirBlockRise = blkRiseF;
   // 反烧预测（反方向霞光）：用同一份网格评估太阳反方向的画布 + 太阳方向遮挡配合度
-  d.antiIndex = antiGlowIndex(grid, LATS, LONS, lat, lon, azSet, blkSetF);
-  d.antiIndexRise = antiGlowIndex(grid, LATS, LONS, lat, lon, azRise, blkRiseF);
+  const antiD = antiGlowDetail(grid, LATS, LONS, lat, lon, azSet, blkSetF);
+  const antiDR = antiGlowDetail(grid, LATS, LONS, lat, lon, azRise, blkRiseF);
+  d.antiIndex = antiD ? antiD.val : null;
+  d.antiMode = antiD ? antiD.mode : null;
+  d.antiIndexRise = antiDR ? antiDR.val : null;
+  d.antiModeRise = antiDR ? antiDR.mode : null;
+  // 降水压制：雨幕挡光，远处/对面云不会被染成霞色 → 反烧与正烧口径一致，雨天不虚高
+  const rainCap = (p)=>{
+    if(p==null || isNaN(p)) return null;
+    if(p>=1) return 20;
+    if(p>=0.1) return 45;
+    return null;
+  };
+  const capSet = rainCap(d.precip);
+  if(capSet!=null && d.antiIndex!=null) d.antiIndex = Math.min(d.antiIndex, capSet);
+  const capRise = rainCap(d.srPrecip);
+  if(capRise!=null && d.antiIndexRise!=null) d.antiIndexRise = Math.min(d.antiIndexRise, capRise);
   const elev = state.city.elev;
   const elevBonus = elev!=null ? (elev>=2000?5:elev>=1000?3:0) : 0;
   if(!state.manualOn){
